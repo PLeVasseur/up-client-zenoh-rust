@@ -13,6 +13,7 @@
 //
 pub mod rpc;
 pub mod utransport;
+pub mod transport_builder;
 
 use protobuf::{Enum, Message};
 use std::{
