@@ -13,7 +13,7 @@
 //
 use async_std::task::{self, block_on};
 use std::{sync::Arc, time};
-use up_client_zenoh::UPClientZenoh;
+use up_client_someipstandin::UPClientSomeipstandin;
 use up_rust::{
     rpc::{CallOptionsBuilder, RpcClient, RpcServer},
     transport::{builder::UMessageBuilder, datamodel::UTransport},
@@ -103,7 +103,7 @@ fn create_special_uuri() -> UUri {
 
 #[async_std::test]
 async fn test_utransport_register_and_unregister() {
-    let upclient = UPClientZenoh::new(Config::default()).await.unwrap();
+    let upclient = UPClientSomeipstandin::new(Config::default()).await.unwrap();
     let uuri = create_utransport_uuri(0);
 
     // Compare the return string
@@ -111,7 +111,7 @@ async fn test_utransport_register_and_unregister() {
         .register_listener(uuri.clone(), Box::new(|_| {}))
         .await
         .unwrap();
-    assert_eq!(listener_string, "upl/0100162e04d20100_0");
+    assert_eq!(listener_string, "someipstandinl/0100162e04d20100_0");
 
     // Able to ungister
     upclient
@@ -134,7 +134,7 @@ async fn test_utransport_register_and_unregister() {
 
 #[async_std::test]
 async fn test_rpcserver_register_and_unregister() {
-    let upclient = UPClientZenoh::new(Config::default()).await.unwrap();
+    let upclient = UPClientSomeipstandin::new(Config::default()).await.unwrap();
     let uuri = create_rpcserver_uuri();
 
     // Compare the return string
@@ -142,7 +142,7 @@ async fn test_rpcserver_register_and_unregister() {
         .register_rpc_listener(uuri.clone(), Box::new(|_| {}))
         .await
         .unwrap();
-    assert_eq!(listener_string, "upl/0100162e04d20100_0");
+    assert_eq!(listener_string, "someipstandinl/0100162e04d20100_0");
 
     // Able to ungister
     upclient
@@ -165,7 +165,7 @@ async fn test_rpcserver_register_and_unregister() {
 
 #[async_std::test]
 async fn test_utransport_special_uuri_register_and_unregister() {
-    let upclient = UPClientZenoh::new(Config::default()).await.unwrap();
+    let upclient = UPClientSomeipstandin::new(Config::default()).await.unwrap();
     let uuri = create_special_uuri();
 
     // Compare the return string
@@ -175,7 +175,7 @@ async fn test_utransport_special_uuri_register_and_unregister() {
         .unwrap();
     assert_eq!(
         listener_string,
-        "upr/060102030a0b0c/**_0&upr/060102030a0b0c/**_1&upr/060102030a0b0c/**_2"
+        "someipstandinr/060102030a0b0c/**_0&someipstandinr/060102030a0b0c/**_1&someipstandinr/060102030a0b0c/**_2"
     );
 
     // Able to ungister
@@ -200,7 +200,7 @@ async fn test_utransport_special_uuri_register_and_unregister() {
 #[async_std::test]
 async fn test_publish_and_subscribe() {
     let target_data = String::from("Hello World!");
-    let upclient = UPClientZenoh::new(Config::default()).await.unwrap();
+    let upclient = UPClientSomeipstandin::new(Config::default()).await.unwrap();
     let uuri = create_utransport_uuri(0);
 
     // Register the listener
@@ -245,7 +245,7 @@ async fn test_publish_and_subscribe() {
 #[async_std::test]
 async fn test_notification_and_subscribe() {
     let target_data = String::from("Hello World!");
-    let upclient = UPClientZenoh::new(Config::default()).await.unwrap();
+    let upclient = UPClientSomeipstandin::new(Config::default()).await.unwrap();
     let uuri = create_utransport_uuri(1);
 
     // Register the listener
@@ -289,8 +289,8 @@ async fn test_notification_and_subscribe() {
 
 #[async_std::test]
 async fn test_rpc_server_client() {
-    let upclient_client = UPClientZenoh::new(Config::default()).await.unwrap();
-    let upclient_server = Arc::new(UPClientZenoh::new(Config::default()).await.unwrap());
+    let upclient_client = UPClientSomeipstandin::new(Config::default()).await.unwrap();
+    let upclient_server = Arc::new(UPClientSomeipstandin::new(Config::default()).await.unwrap());
     let request_data = String::from("This is the request data");
     let response_data = String::from("This is the response data");
     let uuri = create_rpcserver_uuri();
@@ -370,9 +370,9 @@ async fn test_rpc_server_client() {
 
 #[async_std::test]
 async fn test_register_listener_with_special_uuri() {
-    let upclient1 = Arc::new(UPClientZenoh::new(Config::default()).await.unwrap());
+    let upclient1 = Arc::new(UPClientSomeipstandin::new(Config::default()).await.unwrap());
     let upclient1_clone = upclient1.clone();
-    let upclient2 = UPClientZenoh::new(Config::default()).await.unwrap();
+    let upclient2 = UPClientSomeipstandin::new(Config::default()).await.unwrap();
     // Create data
     let publish_data = String::from("Hello World!");
     let publish_data_clone = publish_data.clone();

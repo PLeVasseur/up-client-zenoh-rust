@@ -11,7 +11,7 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
-use crate::UPClientZenoh;
+use crate::UPClientSomeipstandin;
 use async_trait::async_trait;
 use std::{string::ToString, time::Duration};
 use up_rust::{
@@ -25,7 +25,7 @@ use zenoh::prelude::r#async::*;
 
 // TODO: Need to check how to use CallOptions
 #[async_trait]
-impl RpcClient for UPClientZenoh {
+impl RpcClient for UPClientSomeipstandin {
     async fn invoke_method(
         &self,
         topic: UUri,
@@ -37,7 +37,7 @@ impl RpcClient for UPClientZenoh {
             .map_err(|_| RpcMapperError::UnexpectedError(String::from("Wrong UUri")))?;
 
         // Get Zenoh key
-        let Ok(zenoh_key) = UPClientZenoh::to_zenoh_key_string(&topic) else {
+        let Ok(zenoh_key) = UPClientSomeipstandin::to_zenoh_key_string(&topic) else {
             return Err(RpcMapperError::UnexpectedError(String::from(
                 "Unable to transform to Zenoh key",
             )));
@@ -76,7 +76,7 @@ impl RpcClient for UPClientZenoh {
             )));
         };
         // Put into attachment
-        let Ok(attachment) = UPClientZenoh::uattributes_to_attachment(&uattributes) else {
+        let Ok(attachment) = UPClientSomeipstandin::uattributes_to_attachment(&uattributes) else {
             return Err(RpcMapperError::UnexpectedError(String::from(
                 "Invalid uAttributes",
             )));
@@ -110,7 +110,7 @@ impl RpcClient for UPClientZenoh {
         };
         match reply.sample {
             Ok(sample) => {
-                let Some(encoding) = UPClientZenoh::to_upayload_format(&sample.encoding) else {
+                let Some(encoding) = UPClientSomeipstandin::to_upayload_format(&sample.encoding) else {
                     return Err(RpcMapperError::UnexpectedError(String::from(
                         "Error while parsing Zenoh encoding",
                     )));
@@ -136,7 +136,7 @@ impl RpcClient for UPClientZenoh {
 }
 
 #[async_trait]
-impl RpcServer for UPClientZenoh {
+impl RpcServer for UPClientSomeipstandin {
     async fn register_rpc_listener(
         &self,
         method: UUri,

@@ -33,7 +33,7 @@ pub type UtransportListener = Box<dyn Fn(Result<UMessage, UStatus>) + Send + Syn
 const UATTRIBUTE_VERSION: u8 = 1;
 
 pub struct ZenohListener {}
-pub struct UPClientZenoh {
+pub struct UPClientSomeipstandin {
     session: Arc<Session>,
     // Able to unregister Subscriber
     subscriber_map: Arc<Mutex<HashMap<String, Subscriber<'static, ()>>>>,
@@ -46,17 +46,17 @@ pub struct UPClientZenoh {
     callback_counter: AtomicU64,
 }
 
-impl UPClientZenoh {
+impl UPClientSomeipstandin {
     /// # Errors
     /// Will return `Err` if unable to create Zenoh session
-    pub async fn new(config: Config) -> Result<UPClientZenoh, UStatus> {
+    pub async fn new(config: Config) -> Result<UPClientSomeipstandin, UStatus> {
         let Ok(session) = zenoh::open(config).res().await else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
                 "Unable to open Zenoh session",
             ));
         };
-        Ok(UPClientZenoh {
+        Ok(UPClientSomeipstandin {
             session: Arc::new(session),
             subscriber_map: Arc::new(Mutex::new(HashMap::new())),
             queryable_map: Arc::new(Mutex::new(HashMap::new())),
@@ -88,7 +88,7 @@ impl UPClientZenoh {
     // The UURI format should be "upr/<UAuthority id or ip>/<the rest of remote UUri>" or "upl/<local UUri>"
     fn to_zenoh_key_string(uri: &UUri) -> Result<String, UStatus> {
         if uri.authority.is_some() && uri.entity.is_none() && uri.resource.is_none() {
-            Ok(String::from("upr/") + &UPClientZenoh::get_uauth_from_uuri(uri)? + "/**")
+            Ok(String::from("someipstandinr/") + &UPClientSomeipstandin::get_uauth_from_uuri(uri)? + "/**")
         } else {
             let micro_uuri: Vec<u8> = uri.try_into().map_err(|_| {
                 UStatus::fail_with_code(
@@ -99,13 +99,13 @@ impl UPClientZenoh {
             // If the UUri is larger than 8 bytes, then it should be remote UUri with UAuthority
             // We should prepend it to the Zenoh key.
             let mut micro_zenoh_key = if micro_uuri.len() > 8 {
-                String::from("upr/")
+                String::from("someipstandinr/")
                     + &micro_uuri[8..]
                         .iter()
                         .fold(String::new(), |s, c| s + &format!("{c:02x}"))
                     + "/"
             } else {
-                String::from("upl/")
+                String::from("someipstandinl/")
             };
             // The rest part of UUri (UEntity + UResource)
             micro_zenoh_key += &micro_uuri[..8]
@@ -204,8 +204,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            UPClientZenoh::to_zenoh_key_string(&uuri).unwrap(),
-            String::from("upl/0100162e04d20100")
+            UPClientSomeipstandin::to_zenoh_key_string(&uuri).unwrap(),
+            String::from("someipstandinl/0100162e04d20100")
         );
         // create special uuri for test
         let uuri = UUri {
@@ -218,8 +218,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            UPClientZenoh::to_zenoh_key_string(&uuri).unwrap(),
-            String::from("upr/060102030a0b0c/**")
+            UPClientSomeipstandin::to_zenoh_key_string(&uuri).unwrap(),
+            String::from("someipstandinr/060102030a0b0c/**")
         );
     }
 }

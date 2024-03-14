@@ -11,7 +11,7 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
-use crate::{UPClientZenoh, UtransportListener};
+use crate::{UPClientSomeipstandin, UtransportListener};
 use async_trait::async_trait;
 use std::{
     sync::{atomic::Ordering, Arc},
@@ -30,7 +30,7 @@ use zenoh::{
     queryable::Query,
 };
 
-impl UPClientZenoh {
+impl UPClientSomeipstandin {
     async fn send_publish(
         &self,
         zenoh_key: &str,
@@ -46,7 +46,7 @@ impl UPClientZenoh {
         };
 
         // Serialized UAttributes into protobuf
-        let Ok(attachment) = UPClientZenoh::uattributes_to_attachment(&attributes) else {
+        let Ok(attachment) = UPClientSomeipstandin::uattributes_to_attachment(&attributes) else {
             return Err(UStatus::fail_with_code(
                 UCode::INVALID_ARGUMENT,
                 "Invalid uAttributes",
@@ -54,7 +54,7 @@ impl UPClientZenoh {
         };
 
         let priority =
-            UPClientZenoh::map_zenoh_priority(attributes.priority.enum_value().map_err(|_| {
+            UPClientSomeipstandin::map_zenoh_priority(attributes.priority.enum_value().map_err(|_| {
                 UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Invalid priority")
             })?);
 
@@ -92,7 +92,7 @@ impl UPClientZenoh {
         };
 
         // Serialized UAttributes into protobuf
-        let Ok(attachment) = UPClientZenoh::uattributes_to_attachment(&attributes) else {
+        let Ok(attachment) = UPClientSomeipstandin::uattributes_to_attachment(&attributes) else {
             return Err(UStatus::fail_with_code(
                 UCode::INVALID_ARGUMENT,
                 "Invalid uAttributes",
@@ -126,7 +126,7 @@ impl UPClientZenoh {
         let zenoh_callback = move |reply: Reply| {
             let msg = match reply.sample {
                 Ok(sample) => {
-                    let Some(encoding) = UPClientZenoh::to_upayload_format(&sample.encoding) else {
+                    let Some(encoding) = UPClientSomeipstandin::to_upayload_format(&sample.encoding) else {
                         resp_callback(Err(UStatus::fail_with_code(
                             UCode::INTERNAL,
                             "Unable to get the encoding",
@@ -142,7 +142,7 @@ impl UPClientZenoh {
                         )));
                         return;
                     };
-                    let u_attribute = match UPClientZenoh::attachment_to_uattributes(attachment) {
+                    let u_attribute = match UPClientSomeipstandin::attachment_to_uattributes(attachment) {
                         Ok(uattr) => uattr,
                         Err(e) => {
                             log::error!("attachment_to_uattributes error: {:?}", e);
@@ -205,7 +205,7 @@ impl UPClientZenoh {
         };
 
         // Serialized UAttributes into protobuf
-        let Ok(attachment) = UPClientZenoh::uattributes_to_attachment(&attributes) else {
+        let Ok(attachment) = UPClientSomeipstandin::uattributes_to_attachment(&attributes) else {
             log::error!("send_response: Invalide uAttributes");
             return Err(UStatus::fail_with_code(
                 UCode::INVALID_ARGUMENT,
@@ -265,7 +265,7 @@ impl UPClientZenoh {
         listener: Arc<UtransportListener>,
     ) -> Result<String, UStatus> {
         // Get Zenoh key
-        let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
+        let zenoh_key = UPClientSomeipstandin::to_zenoh_key_string(topic)?;
         // Generate listener string for users to delete
         let hashmap_key = format!(
             "{}_{:X}",
@@ -283,7 +283,7 @@ impl UPClientZenoh {
                 )));
                 return;
             };
-            let u_attribute = match UPClientZenoh::attachment_to_uattributes(attachment) {
+            let u_attribute = match UPClientSomeipstandin::attachment_to_uattributes(attachment) {
                 Ok(uattributes) => uattributes,
                 Err(e) => {
                     log::error!("attachment_to_uattributes error: {:?}", e);
@@ -295,7 +295,7 @@ impl UPClientZenoh {
                 }
             };
             // Create UPayload
-            let Some(encoding) = UPClientZenoh::to_upayload_format(&sample.encoding) else {
+            let Some(encoding) = UPClientSomeipstandin::to_upayload_format(&sample.encoding) else {
                 listener(Err(UStatus::fail_with_code(
                     UCode::INTERNAL,
                     "Unable to get payload encoding",
@@ -343,7 +343,7 @@ impl UPClientZenoh {
         listener: Arc<UtransportListener>,
     ) -> Result<String, UStatus> {
         // Get Zenoh key
-        let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
+        let zenoh_key = UPClientSomeipstandin::to_zenoh_key_string(topic)?;
         // Generate listener string for users to delete
         let hashmap_key = format!(
             "{}_{:X}",
@@ -362,7 +362,7 @@ impl UPClientZenoh {
                 )));
                 return;
             };
-            let u_attribute = match UPClientZenoh::attachment_to_uattributes(attachment) {
+            let u_attribute = match UPClientSomeipstandin::attachment_to_uattributes(attachment) {
                 Ok(uattributes) => uattributes,
                 Err(e) => {
                     log::error!("attachment_to_uattributes error: {:?}", e);
@@ -376,7 +376,7 @@ impl UPClientZenoh {
             // Create UPayload
             let u_payload = match query.value() {
                 Some(value) => {
-                    let Some(encoding) = UPClientZenoh::to_upayload_format(&value.encoding) else {
+                    let Some(encoding) = UPClientSomeipstandin::to_upayload_format(&value.encoding) else {
                         listener(Err(UStatus::fail_with_code(
                             UCode::INTERNAL,
                             "Unable to get payload encoding",
@@ -436,7 +436,7 @@ impl UPClientZenoh {
         listener: Arc<UtransportListener>,
     ) -> Result<String, UStatus> {
         // Get Zenoh key
-        let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
+        let zenoh_key = UPClientSomeipstandin::to_zenoh_key_string(topic)?;
         // Generate listener string for users to delete
         let hashmap_key = format!(
             "{}_{:X}",
@@ -454,7 +454,7 @@ impl UPClientZenoh {
 }
 
 #[async_trait]
-impl UTransport for UPClientZenoh {
+impl UTransport for UPClientSomeipstandin {
     async fn send(&self, message: UMessage) -> Result<(), UStatus> {
         let payload = *message.payload.0.ok_or(UStatus::fail_with_code(
             UCode::INVALID_ARGUMENT,
@@ -489,7 +489,7 @@ impl UTransport for UPClientZenoh {
                     // If sink is empty, this is Publication => topic is source
                     attributes.clone().source
                 };
-                let zenoh_key = UPClientZenoh::to_zenoh_key_string(&topic)?;
+                let zenoh_key = UPClientSomeipstandin::to_zenoh_key_string(&topic)?;
                 // Send Publish
                 self.send_publish(&zenoh_key, payload, attributes).await
             }
@@ -505,7 +505,7 @@ impl UTransport for UPClientZenoh {
                     })?;
                 // Get Zenoh key
                 let topic = attributes.clone().sink;
-                let zenoh_key = UPClientZenoh::to_zenoh_key_string(&topic)?;
+                let zenoh_key = UPClientSomeipstandin::to_zenoh_key_string(&topic)?;
                 // Send Request
                 self.send_request(&zenoh_key, payload, attributes).await
             }
@@ -521,7 +521,7 @@ impl UTransport for UPClientZenoh {
                     })?;
                 // Get Zenoh key
                 let topic = attributes.clone().source;
-                let zenoh_key = UPClientZenoh::to_zenoh_key_string(&topic)?;
+                let zenoh_key = UPClientSomeipstandin::to_zenoh_key_string(&topic)?;
                 // Send Response
                 self.send_response(&zenoh_key, payload, attributes).await
             }
