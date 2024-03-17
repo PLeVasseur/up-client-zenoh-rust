@@ -16,11 +16,11 @@ use async_trait::async_trait;
 use std::collections::hash_map::Entry;
 use std::{sync::Arc, time::Duration};
 use up_rust::listener_wrapper::ListenerWrapper;
-use up_rust::ulistener::ClonableBoxUListener;
 use up_rust::{
     Data, UAttributes, UAttributesValidators, UCode, UMessage, UMessageType, UPayload,
     UPayloadFormat, UStatus, UTransport, UUri, UriValidator,
 };
+use up_rust::ulistener::UListener;
 use zenoh::{
     prelude::{r#async::*, Sample},
     query::Reply,
@@ -264,17 +264,15 @@ impl UPClientZenoh {
 
         Ok(())
     }
-    async fn register_publish_listener<T>(&self, topic: &UUri, listener: T) -> Result<(), UStatus>
-    where
-        T: Clone + ClonableBoxUListener + 'static,
+    async fn register_publish_listener(&self, topic: &UUri, listener_wrapper: ListenerWrapper) -> Result<(), UStatus>
     {
         // Get Zenoh key
         let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
 
         // Setup callback
-        let listener_callback = listener.clone();
+        let callback_listener_wrapper = listener_wrapper.clone();
         let callback = move |sample: Sample| {
-            let listener_wrapper = Arc::new(ListenerWrapper::new(listener_callback.clone()));
+            let listener_wrapper = callback_listener_wrapper.clone();
             // Create UAttribute
             let Some(attachment) = sample.attachment() else {
                 listener_wrapper.on_receive(Err(UStatus::fail_with_code(
@@ -323,14 +321,12 @@ impl UPClientZenoh {
             .res()
             .await
         {
-            let listener_wrapper = Arc::new(ListenerWrapper::new(listener));
-
             // Explicitly bind the lock guard to extend its lifetime
             let mut subscriber_map_guard = self.subscriber_map.lock().unwrap();
 
             // Now the lock guard is explicitly held until the end of the block
             let listeners = subscriber_map_guard.entry(topic.clone()).or_default();
-            listeners.insert(listener_wrapper, subscriber);
+            listeners.insert(Arc::new(listener_wrapper), subscriber);
         } else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
@@ -341,18 +337,16 @@ impl UPClientZenoh {
         Ok(())
     }
 
-    async fn register_request_listener<T>(&self, topic: &UUri, listener: T) -> Result<(), UStatus>
-    where
-        T: Clone + ClonableBoxUListener + 'static,
+    async fn register_request_listener(&self, topic: &UUri, listener_wrapper: ListenerWrapper) -> Result<(), UStatus>
     {
         // Get Zenoh key
         let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
 
         let query_map = self.query_map.clone();
-        let listener_callback = listener.clone();
+        let callback_listener_wrapper = listener_wrapper.clone();
         // Setup callback
         let callback = move |query: Query| {
-            let listener_wrapper = Arc::new(ListenerWrapper::new(listener_callback.clone()));
+            let listener_wrapper = callback_listener_wrapper.clone();
             // Create UAttribute
             let Some(attachment) = query.attachment() else {
                 listener_wrapper.on_receive(Err(UStatus::fail_with_code(
@@ -408,7 +402,6 @@ impl UPClientZenoh {
                 .insert(u_attribute.reqid.to_string(), query);
             listener_wrapper.on_receive(Ok(msg));
         };
-        let listener_wrapper = Arc::new(ListenerWrapper::new(listener));
         if let Ok(queryable) = self
             .session
             .declare_queryable(&zenoh_key)
@@ -420,7 +413,7 @@ impl UPClientZenoh {
 
             // Now the lock guard is explicitly held until the end of the block
             let listeners = queryable_map_guard.entry(topic.clone()).or_default();
-            listeners.insert(listener_wrapper, queryable);
+            listeners.insert(Arc::new(listener_wrapper), queryable);
         } else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
@@ -432,17 +425,13 @@ impl UPClientZenoh {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn register_response_listener<T>(&self, topic: &UUri, listener: T) -> Result<(), UStatus>
-    where
-        T: Clone + ClonableBoxUListener + 'static,
+    fn register_response_listener(&self, topic: &UUri, listener_wrapper: ListenerWrapper) -> Result<(), UStatus>
     {
-        let listener_wrapper = Arc::new(ListenerWrapper::new(listener));
-
         let mut rpc_callback_map_guard = self.rpc_callback_map.lock().unwrap();
 
         let listeners = rpc_callback_map_guard.entry(topic.clone()).or_default();
 
-        listeners.insert(listener_wrapper);
+        listeners.insert(Arc::new(listener_wrapper));
 
         Ok(())
     }
@@ -534,19 +523,21 @@ impl UTransport for UPClientZenoh {
         ))
     }
 
-    async fn register_listener<T>(&self, topic: UUri, listener: T) -> Result<(), UStatus>
+    async fn register_listener<T>(&self, topic: UUri, listener: &Arc<T>) -> Result<(), UStatus>
     where
-        T: Clone + ClonableBoxUListener + 'static,
+        T: UListener,
     {
+        let listener_wrapper = ListenerWrapper::new(&listener);
+
         if topic.authority.is_some() && topic.entity.is_none() && topic.resource.is_none() {
             // This is special UUri which means we need to register for all of Publish, Request, and Response
             // RPC response
-            self.register_response_listener(&topic, listener.clone())?;
+            self.register_response_listener(&topic, listener_wrapper.clone())?;
             // RPC request
-            self.register_request_listener(&topic, listener.clone())
+            self.register_request_listener(&topic, listener_wrapper.clone())
                 .await?;
             // Normal publish
-            self.register_publish_listener(&topic, listener).await?;
+            self.register_publish_listener(&topic, listener_wrapper).await?;
             Ok(())
         } else {
             // Do the validation
@@ -555,21 +546,22 @@ impl UTransport for UPClientZenoh {
 
             if UriValidator::is_rpc_response(&topic) {
                 // RPC response
-                self.register_response_listener(&topic, listener)
+                self.register_response_listener(&topic, listener_wrapper)
             } else if UriValidator::is_rpc_method(&topic) {
                 // RPC request
-                self.register_request_listener(&topic, listener).await
+                self.register_request_listener(&topic, listener_wrapper).await
             } else {
                 // Normal publish
-                self.register_publish_listener(&topic, listener).await
+                self.register_publish_listener(&topic, listener_wrapper).await
             }
         }
     }
 
-    async fn unregister_listener<T>(&self, topic: UUri, listener: T) -> Result<(), UStatus>
+    async fn unregister_listener<T>(&self, topic: UUri, listener: &Arc<T>) -> Result<(), UStatus>
     where
-        T: Clone + ClonableBoxUListener + 'static,
+        T: UListener
     {
+        let listener_wrapper = ListenerWrapper::new(&listener);
         let mut message_type = UMessageType::UMESSAGE_TYPE_UNSPECIFIED;
         let mut found_authority = false;
         if topic.authority.is_some() && topic.entity.is_none() && topic.resource.is_none() {
@@ -626,8 +618,7 @@ impl UTransport for UPClientZenoh {
                 }
                 Entry::Occupied(mut e) => {
                     let occupied = e.get_mut();
-                    let identified_listener = ListenerWrapper::new(listener.clone());
-                    let possibly_removed = occupied.remove(&identified_listener);
+                    let possibly_removed = occupied.remove(&listener_wrapper);
                     if possibly_removed.is_none() {
                         if message_type == UMessageType::UMESSAGE_TYPE_REQUEST {
                             return Err(UStatus::fail_with_code(
@@ -659,8 +650,7 @@ impl UTransport for UPClientZenoh {
                 }
                 Entry::Occupied(mut e) => {
                     let occupied = e.get_mut();
-                    let identified_listener = ListenerWrapper::new(listener);
-                    let possibly_removed = occupied.remove(&identified_listener);
+                    let possibly_removed = occupied.remove(&listener_wrapper);
                     if possibly_removed.is_none() {
                         if message_type == UMessageType::UMESSAGE_TYPE_PUBLISH {
                             return Err(UStatus::fail_with_code(
