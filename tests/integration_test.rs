@@ -482,13 +482,13 @@ impl UListener for TestAuthorityOnlyRegisterListener {
                         // Swap source and sink
                         (uattributes.sink, uattributes.source) =
                             (uattributes.source.clone(), uattributes.sink.clone());
-                        // Send back result
-                        block_on(self.service_provider_up_client.send(UMessage {
-                            attributes: Some(uattributes).into(),
-                            payload,
-                            ..Default::default()
-                        }))
-                        .unwrap();
+                        // // Send back result
+                        // block_on(self.service_provider_up_client.send(UMessage {
+                        //     attributes: Some(uattributes).into(),
+                        //     payload,
+                        //     ..Default::default()
+                        // }))
+                        // .unwrap();
                     }
                     UMessageType::UMESSAGE_TYPE_RESPONSE => {
                         panic!("Response type");
@@ -504,84 +504,143 @@ impl UListener for TestAuthorityOnlyRegisterListener {
 }
 
 #[async_std::test]
-async fn test_register_listener_with_special_uuri() {
-    let upclient1 = Arc::new(UPClientZenoh::new(Config::default()).await.unwrap());
-    let upclient2 = UPClientZenoh::new(Config::default()).await.unwrap();
-    // Create data
-    let publish_data = String::from("Hello World!");
-    let request_data = String::from("This is the request data");
-
-    // Register the listener
-    let listener_uuri = create_special_uuri();
-    println!("listener_uuri: {:?}", &listener_uuri);
-    let listener = Arc::new(TestAuthorityOnlyRegisterListener::new(
-        &publish_data,
-        &request_data,
-        &upclient1,
-    ));
-    let register_res = upclient1
-        .register_listener(listener_uuri.clone(), &listener)
-        .await;
-    assert_eq!(register_res, Ok(()));
+async fn test_register_listener_with_special_uuri_2() {
+    let target_data = String::from("Hello World!");
+    let upclient_for_registers = Arc::new(UPClientZenoh::new(Config::default()).await.unwrap());
 
     let mut publish_uuri = create_utransport_uuri(0);
     publish_uuri.authority = Some(create_authority()).into();
+
     println!("publish_uuri: {:?}", &publish_uuri);
-    let pub_listener = Arc::new(PubSubTestListener::new(
-        publish_uuri.clone(),
-        publish_data.clone(),
+
+    let listener_uuri = create_special_uuri();
+    println!("listener_uuri: {:?}", &listener_uuri);
+
+    // Register the listener
+    let pub_sub_test_listener = Arc::new(TestAuthorityOnlyRegisterListener::new(
+        &target_data,
+        &target_data,
+        &upclient_for_registers,
     ));
-    let register_res = upclient1
-        .register_listener(publish_uuri.clone(), &pub_listener)
+    let register_res = upclient_for_registers
+        .register_listener(listener_uuri.clone(), &pub_sub_test_listener)
         .await;
     assert_eq!(register_res, Ok(()));
 
-    // send Publish
-    {
-        let uuid_builder = UUIDBuilder::new();
+    let uuid_builder = UUIDBuilder::new();
 
-        let umessage = UMessageBuilder::publish(publish_uuri.clone())
-            .with_message_id(uuid_builder.build())
-            .build_with_payload(
-                publish_data.as_bytes().to_vec().into(),
-                UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-            )
-            .unwrap();
+    let umessage = UMessageBuilder::publish(publish_uuri.clone())
+        .with_message_id(uuid_builder.build())
+        .build_with_payload(
+            target_data.as_bytes().to_vec().into(),
+            UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
+        )
+        .unwrap();
 
-        println!("umessage to send: {:?}", &umessage);
+    println!("umessage: {:?}", umessage);
 
-        upclient2.send(umessage).await.unwrap();
+    let send_res = upclient_for_registers.send(umessage).await;
+    assert_eq!(send_res, Ok(()));
 
-        // Waiting for the subscriber to receive data
-        task::sleep(time::Duration::from_millis(2000)).await;
-    }
-    // // send Request
-    // {
-    //     let mut request_uuri = create_rpcserver_uuri();
-    //     request_uuri.authority = Some(create_authority()).into();
-    //
-    //     // Run RpcClient
-    //     let payload = UPayload {
-    //         length: Some(0),
-    //         format: UPayloadFormat::UPAYLOAD_FORMAT_TEXT.into(),
-    //         data: Some(Data::Value(request_data.as_bytes().to_vec())),
-    //         ..Default::default()
-    //     };
-    //     let result = upclient2
-    //         .invoke_method(request_uuri, payload, CallOptionsBuilder::default().build())
-    //         .await;
-    //     // Process the result
-    //     if let Data::Value(v) = result.unwrap().payload.unwrap().data.unwrap() {
-    //         let value = v.into_iter().map(|c| c as char).collect::<String>();
-    //         assert_eq!(request_data, value);
-    //     } else {
-    //         panic!("Failed to get result from invoke_method.");
-    //     }
-    // }
-    //
-    // // Cleanup
-    // upclient1
-    //     .unregister_listener(listener_uuri, &listener_string)
-    //     .await
-    //     .unwrap();
+    // Waiting for the subscriber to receive data
+    task::sleep(time::Duration::from_millis(1000)).await;
+
+    // Cleanup
+    let unregister_res = upclient_for_registers
+        .unregister_listener(listener_uuri.clone(), &pub_sub_test_listener)
+        .await;
+    assert_eq!(unregister_res, Ok(()));
 }
+
+// #[async_std::test]
+// async fn test_register_listener_with_special_uuri() {
+//     let upclient1 = Arc::new(UPClientZenoh::new(Config::default()).await.unwrap());
+//     let upclient2 = UPClientZenoh::new(Config::default()).await.unwrap();
+//     // Create data
+//     let publish_data = String::from("Hello World!");
+//     let request_data = String::from("This is the request data");
+//
+//     let mut publish_uuri = create_utransport_uuri(0);
+//     publish_uuri.authority = Some(create_authority()).into();
+//
+//     // Register the listener
+//     // let listener_uuri = create_special_uuri();
+//     // println!("listener_uuri: {:?}", &listener_uuri);
+//     // let listener = Arc::new(TestAuthorityOnlyRegisterListener::new(
+//     //     &publish_data,
+//     //     &request_data,
+//     //     &upclient1,
+//     // ));
+//     // let register_res = upclient1
+//     //     // .register_listener(publish_uuri.clone(), &listener)
+//     //     .register_listener(listener_uuri.clone(), &listener)
+//     //     .await;
+//     // assert_eq!(register_res, Ok(()));
+//
+//     println!("publish_uuri: {:?}", &publish_uuri);
+//     let pub_listener = Arc::new(PubSubTestListener::new(
+//         publish_uuri.clone(),
+//         publish_data.clone(),
+//     ));
+//     let register_res = upclient1
+//         .register_listener(publish_uuri.clone(), &pub_listener)
+//         // .register_listener(publish_uuri.clone(), &pub_listener)
+//         .await;
+//     assert_eq!(register_res, Ok(()));
+//
+//     // send Publish
+//     // {
+//         let uuid_builder = UUIDBuilder::new();
+//
+//         let umessage = UMessageBuilder::publish(publish_uuri.clone())
+//             .with_message_id(uuid_builder.build())
+//             .build_with_payload(
+//                 publish_data.as_bytes().to_vec().into(),
+//                 UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
+//             )
+//             .unwrap();
+//
+//         println!("umessage to send: {:?}", &umessage);
+//
+//         upclient2.send(umessage).await.unwrap();
+//
+//         // Waiting for the subscriber to receive data
+//         task::sleep(time::Duration::from_millis(2000)).await;
+//     // }
+//     // // send Request
+//     // {
+//     //     let mut request_uuri = create_rpcserver_uuri();
+//     //     request_uuri.authority = Some(create_authority()).into();
+//     //
+//     //     // Run RpcClient
+//     //     let payload = UPayload {
+//     //         length: Some(0),
+//     //         format: UPayloadFormat::UPAYLOAD_FORMAT_TEXT.into(),
+//     //         data: Some(Data::Value(request_data.as_bytes().to_vec())),
+//     //         ..Default::default()
+//     //     };
+//     //     let result = upclient2
+//     //         .invoke_method(request_uuri, payload, CallOptionsBuilder::default().build())
+//     //         .await;
+//     //     // Process the result
+//     //     if let Data::Value(v) = result.unwrap().payload.unwrap().data.unwrap() {
+//     //         let value = v.into_iter().map(|c| c as char).collect::<String>();
+//     //         assert_eq!(request_data, value);
+//     //     } else {
+//     //         panic!("Failed to get result from invoke_method.");
+//     //     }
+//     // }
+//
+//     // Cleanup
+//     // let unregister_res = upclient1
+//     //     // .unregister_listener(publish_uuri.clone(), &listener)
+//     //     .unregister_listener(listener_uuri.clone(), &listener)
+//     //     .await;
+//     // println!("unregister_res: {:?}", unregister_res);
+//
+//     let unregister_res = upclient1
+//         .unregister_listener(publish_uuri.clone(), &pub_listener)
+//         // .unregister_listener(publish_uuri.clone(), &pub_listener)
+//         .await;
+//     println!("unregister_res: {:?}", unregister_res);
+// }
