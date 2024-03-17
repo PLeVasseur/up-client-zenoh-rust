@@ -16,11 +16,11 @@ use async_trait::async_trait;
 use std::collections::hash_map::Entry;
 use std::{sync::Arc, time::Duration};
 use up_rust::listener_wrapper::ListenerWrapper;
+use up_rust::ulistener::UListener;
 use up_rust::{
     Data, UAttributes, UAttributesValidators, UCode, UMessage, UMessageType, UPayload,
     UPayloadFormat, UStatus, UTransport, UUri, UriValidator,
 };
-use up_rust::ulistener::UListener;
 use zenoh::{
     prelude::{r#async::*, Sample},
     query::Reply,
@@ -264,14 +264,19 @@ impl UPClientZenoh {
 
         Ok(())
     }
-    async fn register_publish_listener(&self, topic: &UUri, listener_wrapper: ListenerWrapper) -> Result<(), UStatus>
-    {
+    async fn register_publish_listener(
+        &self,
+        topic: &UUri,
+        listener_wrapper: ListenerWrapper,
+    ) -> Result<(), UStatus> {
         // Get Zenoh key
         let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
+        println!("register_publish_listener: zenoh_key: {}", zenoh_key);
 
         // Setup callback
         let callback_listener_wrapper = listener_wrapper.clone();
         let callback = move |sample: Sample| {
+            println!("inside of callback within register_publish_listener");
             let listener_wrapper = callback_listener_wrapper.clone();
             // Create UAttribute
             let Some(attachment) = sample.attachment() else {
@@ -314,6 +319,10 @@ impl UPClientZenoh {
             };
             listener_wrapper.on_receive(Ok(msg));
         };
+        println!(
+            "right before creating subscriber, zenoh_key: {}",
+            &zenoh_key
+        );
         if let Ok(subscriber) = self
             .session
             .declare_subscriber(&zenoh_key)
@@ -321,12 +330,22 @@ impl UPClientZenoh {
             .res()
             .await
         {
-            // Explicitly bind the lock guard to extend its lifetime
+            println!("topic: {:?}", &topic);
+            println!("created zenoh subscriber");
             let mut subscriber_map_guard = self.subscriber_map.lock().unwrap();
-
-            // Now the lock guard is explicitly held until the end of the block
             let listeners = subscriber_map_guard.entry(topic.clone()).or_default();
+
+            println!("before insertion:");
+            for _ in listeners.iter() {
+                println!("listener_wrapper found");
+            }
+
             listeners.insert(Arc::new(listener_wrapper), subscriber);
+
+            println!("after insertion:");
+            for _ in listeners.iter() {
+                println!("listener_wrapper found");
+            }
         } else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
@@ -337,8 +356,11 @@ impl UPClientZenoh {
         Ok(())
     }
 
-    async fn register_request_listener(&self, topic: &UUri, listener_wrapper: ListenerWrapper) -> Result<(), UStatus>
-    {
+    async fn register_request_listener(
+        &self,
+        topic: &UUri,
+        listener_wrapper: ListenerWrapper,
+    ) -> Result<(), UStatus> {
         // Get Zenoh key
         let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
 
@@ -410,8 +432,6 @@ impl UPClientZenoh {
             .await
         {
             let mut queryable_map_guard = self.queryable_map.lock().unwrap();
-
-            // Now the lock guard is explicitly held until the end of the block
             let listeners = queryable_map_guard.entry(topic.clone()).or_default();
             listeners.insert(Arc::new(listener_wrapper), queryable);
         } else {
@@ -425,8 +445,11 @@ impl UPClientZenoh {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn register_response_listener(&self, topic: &UUri, listener_wrapper: ListenerWrapper) -> Result<(), UStatus>
-    {
+    fn register_response_listener(
+        &self,
+        topic: &UUri,
+        listener_wrapper: ListenerWrapper,
+    ) -> Result<(), UStatus> {
         let mut rpc_callback_map_guard = self.rpc_callback_map.lock().unwrap();
 
         let listeners = rpc_callback_map_guard.entry(topic.clone()).or_default();
@@ -474,6 +497,7 @@ impl UTransport for UPClientZenoh {
                     attributes.clone().source
                 };
                 let zenoh_key = UPClientZenoh::to_zenoh_key_string(&topic)?;
+                println!("send(), PUBLISH arm, zenoh_key: {}", &zenoh_key);
                 // Send Publish
                 self.send_publish(&zenoh_key, payload, attributes).await
             }
@@ -530,6 +554,7 @@ impl UTransport for UPClientZenoh {
         let listener_wrapper = ListenerWrapper::new(&listener);
 
         if topic.authority.is_some() && topic.entity.is_none() && topic.resource.is_none() {
+            println!("identified as special uuri");
             // This is special UUri which means we need to register for all of Publish, Request, and Response
             // RPC response
             self.register_response_listener(&topic, listener_wrapper.clone())?;
@@ -537,7 +562,8 @@ impl UTransport for UPClientZenoh {
             self.register_request_listener(&topic, listener_wrapper.clone())
                 .await?;
             // Normal publish
-            self.register_publish_listener(&topic, listener_wrapper).await?;
+            self.register_publish_listener(&topic, listener_wrapper)
+                .await?;
             Ok(())
         } else {
             // Do the validation
@@ -549,17 +575,19 @@ impl UTransport for UPClientZenoh {
                 self.register_response_listener(&topic, listener_wrapper)
             } else if UriValidator::is_rpc_method(&topic) {
                 // RPC request
-                self.register_request_listener(&topic, listener_wrapper).await
+                self.register_request_listener(&topic, listener_wrapper)
+                    .await
             } else {
                 // Normal publish
-                self.register_publish_listener(&topic, listener_wrapper).await
+                self.register_publish_listener(&topic, listener_wrapper)
+                    .await
             }
         }
     }
 
     async fn unregister_listener<T>(&self, topic: UUri, listener: &Arc<T>) -> Result<(), UStatus>
     where
-        T: UListener
+        T: UListener,
     {
         let listener_wrapper = ListenerWrapper::new(&listener);
         let mut message_type = UMessageType::UMESSAGE_TYPE_UNSPECIFIED;
