@@ -215,6 +215,7 @@ impl PubSubTestListener {
 
 impl UListener for PubSubTestListener {
     fn on_receive(&self, received: Result<UMessage, UStatus>) {
+        println!("Within PubSubTestListener");
         match received {
             Ok(msg) => {
                 if let Data::Value(v) = msg.payload.unwrap().data.unwrap() {
@@ -287,6 +288,7 @@ impl NotifTestListener {
 
 impl UListener for NotifTestListener {
     fn on_receive(&self, received: Result<UMessage, UStatus>) {
+        println!("Within NotifTestListener");
         match received {
             Ok(msg) => {
                 if let Data::Value(v) = msg.payload.unwrap().data.unwrap() {
