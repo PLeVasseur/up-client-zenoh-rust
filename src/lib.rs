@@ -20,8 +20,9 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+use std::collections::hash_map::Entry;
 use up_rust::listener_wrapper::ListenerWrapper;
-use up_rust::{UAttributes, UCode, UPayloadFormat, UPriority, UStatus, UUri};
+use up_rust::{UAttributes, UCode, UMessageType, UPayloadFormat, UPriority, UStatus, UUri};
 use zenoh::{
     config::Config,
     prelude::r#async::*,
@@ -49,6 +50,28 @@ pub struct UPClientZenoh {
 }
 
 impl UPClientZenoh {
+    pub async fn check_for_uuri_in_maps(&self, uuri: &UUri) {
+        let mut subscriber_map_guard = self.subscriber_map.lock().unwrap();
+
+        let listeners = subscriber_map_guard.entry(uuri.clone());
+        match listeners {
+            Entry::Vacant(_) => {
+                 let fail = UStatus::fail_with_code(
+                    UCode::NOT_FOUND,
+                    format!("No listeners registered for topic: {:?}", &uuri),
+                );
+
+                println!("subscriber_map contains nothing for that uuri: {fail:?}");
+            }
+            Entry::Occupied(mut e) => {
+                let occupied = e.get_mut();
+                for o in occupied.iter() {
+                    println!("there is a subscriber: {:?}", &o.1);
+                }
+            }
+        }
+    }
+
     /// # Errors
     /// Will return `Err` if unable to create Zenoh session
     pub async fn new(config: Config) -> Result<UPClientZenoh, UStatus> {

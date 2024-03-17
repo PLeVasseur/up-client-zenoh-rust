@@ -482,13 +482,13 @@ impl UListener for TestAuthorityOnlyRegisterListener {
                         // Swap source and sink
                         (uattributes.sink, uattributes.source) =
                             (uattributes.source.clone(), uattributes.sink.clone());
-                        // // Send back result
-                        // block_on(self.service_provider_up_client.send(UMessage {
-                        //     attributes: Some(uattributes).into(),
-                        //     payload,
-                        //     ..Default::default()
-                        // }))
-                        // .unwrap();
+                        // Send back result
+                        block_on(self.service_provider_up_client.send(UMessage {
+                            attributes: Some(uattributes).into(),
+                            payload,
+                            ..Default::default()
+                        }))
+                        .unwrap();
                     }
                     UMessageType::UMESSAGE_TYPE_RESPONSE => {
                         panic!("Response type");
@@ -507,6 +507,7 @@ impl UListener for TestAuthorityOnlyRegisterListener {
 async fn test_register_listener_with_special_uuri_2() {
     let target_data = String::from("Hello World!");
     let upclient_for_registers = Arc::new(UPClientZenoh::new(Config::default()).await.unwrap());
+    let upclient_for_sending = UPClientZenoh::new(Config::default()).await.unwrap();
 
     let mut publish_uuri = create_utransport_uuri(0);
     publish_uuri.authority = Some(create_authority()).into();
@@ -523,9 +524,12 @@ async fn test_register_listener_with_special_uuri_2() {
         &upclient_for_registers,
     ));
     let register_res = upclient_for_registers
-        .register_listener(listener_uuri.clone(), &pub_sub_test_listener)
+        .register_listener(publish_uuri.clone(), &pub_sub_test_listener)
+        // .register_listener(listener_uuri.clone(), &pub_sub_test_listener)
         .await;
     assert_eq!(register_res, Ok(()));
+
+    upclient_for_registers.check_for_uuri_in_maps(&publish_uuri).await;
 
     let uuid_builder = UUIDBuilder::new();
 
@@ -539,15 +543,18 @@ async fn test_register_listener_with_special_uuri_2() {
 
     println!("umessage: {:?}", umessage);
 
-    let send_res = upclient_for_registers.send(umessage).await;
+    let send_res = upclient_for_sending.send(umessage.clone()).await;
     assert_eq!(send_res, Ok(()));
+    // let send_res = upclient_for_registers.send(umessage).await;
+    // assert_eq!(send_res, Ok(()));
 
     // Waiting for the subscriber to receive data
     task::sleep(time::Duration::from_millis(1000)).await;
 
     // Cleanup
     let unregister_res = upclient_for_registers
-        .unregister_listener(listener_uuri.clone(), &pub_sub_test_listener)
+        .unregister_listener(publish_uuri.clone(), &pub_sub_test_listener)
+        // .unregister_listener(listener_uuri.clone(), &pub_sub_test_listener)
         .await;
     assert_eq!(unregister_res, Ok(()));
 }
