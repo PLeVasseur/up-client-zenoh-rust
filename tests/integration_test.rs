@@ -432,22 +432,22 @@ impl UListener for NotifTestListener {
 struct TestAuthorityOnlyRegisterListener {
     expected_publish_data: Arc<String>,
     expected_request_data: Arc<String>,
-    service_provider_up_client: Arc<UPClientZenoh>,
+    // service_provider_up_client: Arc<UPClientZenoh>,
 }
 
 impl TestAuthorityOnlyRegisterListener {
     pub fn new(
         expected_publish_data: &str,
         expected_request_data: &str,
-        service_provider_up_client: &Arc<UPClientZenoh>,
+        // service_provider_up_client: &Arc<UPClientZenoh>,
     ) -> Self {
         let expected_publish_data = Arc::new(expected_publish_data.to_string());
         let expected_request_data = Arc::new(expected_request_data.to_string());
-        let service_provider_up_client = service_provider_up_client.clone();
+        // let service_provider_up_client = service_provider_up_client.clone();
         Self {
             expected_publish_data,
             expected_request_data,
-            service_provider_up_client,
+            // service_provider_up_client,
         }
     }
 }
@@ -482,13 +482,13 @@ impl UListener for TestAuthorityOnlyRegisterListener {
                         // Swap source and sink
                         (uattributes.sink, uattributes.source) =
                             (uattributes.source.clone(), uattributes.sink.clone());
-                        // Send back result
-                        block_on(self.service_provider_up_client.send(UMessage {
-                            attributes: Some(uattributes).into(),
-                            payload,
-                            ..Default::default()
-                        }))
-                        .unwrap();
+                        // // Send back result
+                        // block_on(self.service_provider_up_client.send(UMessage {
+                        //     attributes: Some(uattributes).into(),
+                        //     payload,
+                        //     ..Default::default()
+                        // }))
+                        // .unwrap();
                     }
                     UMessageType::UMESSAGE_TYPE_RESPONSE => {
                         panic!("Response type");
@@ -521,7 +521,7 @@ async fn test_register_listener_with_special_uuri_2() {
     let pub_sub_test_listener = Arc::new(TestAuthorityOnlyRegisterListener::new(
         &target_data,
         &target_data,
-        &upclient_for_registers,
+        // &upclient_for_registers,
     ));
     let register_res = upclient_for_registers
         .register_listener(publish_uuri.clone(), &pub_sub_test_listener)
@@ -529,7 +529,9 @@ async fn test_register_listener_with_special_uuri_2() {
         .await;
     assert_eq!(register_res, Ok(()));
 
-    upclient_for_registers.check_for_uuri_in_maps(&publish_uuri).await;
+    upclient_for_registers
+        .check_for_uuri_in_maps(&publish_uuri)
+        .await;
 
     let uuid_builder = UUIDBuilder::new();
 
@@ -543,8 +545,13 @@ async fn test_register_listener_with_special_uuri_2() {
 
     println!("umessage: {:?}", umessage);
 
+    // I suppose this should work, and oddly, it sometimes does and we're able to see the println
+    // from within the on_receive() method
     let send_res = upclient_for_sending.send(umessage.clone()).await;
     assert_eq!(send_res, Ok(()));
+
+    // This seems to always work, but obviously in a real-world situation we're not going to
+    // be sending onto the same UPClientZenoh that we're registered on
     // let send_res = upclient_for_registers.send(umessage).await;
     // assert_eq!(send_res, Ok(()));
 

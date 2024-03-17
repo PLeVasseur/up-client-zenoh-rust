@@ -15,12 +15,12 @@ pub mod rpc;
 pub mod utransport;
 
 use protobuf::{Enum, Message};
+use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use std::collections::hash_map::Entry;
 use up_rust::listener_wrapper::ListenerWrapper;
 use up_rust::{UAttributes, UCode, UMessageType, UPayloadFormat, UPriority, UStatus, UUri};
 use zenoh::{
@@ -56,7 +56,7 @@ impl UPClientZenoh {
         let listeners = subscriber_map_guard.entry(uuri.clone());
         match listeners {
             Entry::Vacant(_) => {
-                 let fail = UStatus::fail_with_code(
+                let fail = UStatus::fail_with_code(
                     UCode::NOT_FOUND,
                     format!("No listeners registered for topic: {:?}", &uuri),
                 );
