@@ -271,12 +271,10 @@ impl UPClientZenoh {
     ) -> Result<(), UStatus> {
         // Get Zenoh key
         let zenoh_key = UPClientZenoh::to_zenoh_key_string(topic)?;
-        println!("register_publish_listener: zenoh_key: {}", zenoh_key);
 
         // Setup callback
         let callback_listener_wrapper = listener_wrapper.clone();
         let callback = move |sample: Sample| {
-            println!("inside of callback within register_publish_listener");
             let listener_wrapper = callback_listener_wrapper.clone();
             // Create UAttribute
             let Some(attachment) = sample.attachment() else {
@@ -319,10 +317,6 @@ impl UPClientZenoh {
             };
             listener_wrapper.on_receive(Ok(msg));
         };
-        println!(
-            "right before creating subscriber, zenoh_key: {}",
-            &zenoh_key
-        );
         if let Ok(subscriber) = self
             .session
             .declare_subscriber(&zenoh_key)
@@ -330,22 +324,9 @@ impl UPClientZenoh {
             .res()
             .await
         {
-            println!("topic: {:?}", &topic);
-            println!("created zenoh subscriber");
             let mut subscriber_map_guard = self.subscriber_map.lock().unwrap();
             let listeners = subscriber_map_guard.entry(topic.clone()).or_default();
-
-            println!("before insertion:");
-            for _ in listeners.iter() {
-                println!("listener_wrapper found");
-            }
-
             listeners.insert(Arc::new(listener_wrapper), subscriber);
-
-            println!("after insertion:");
-            for _ in listeners.iter() {
-                println!("listener_wrapper found");
-            }
         } else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
@@ -497,7 +478,6 @@ impl UTransport for UPClientZenoh {
                     attributes.clone().source
                 };
                 let zenoh_key = UPClientZenoh::to_zenoh_key_string(&topic)?;
-                println!("send(), PUBLISH arm, zenoh_key: {}", &zenoh_key);
                 // Send Publish
                 self.send_publish(&zenoh_key, payload, attributes).await
             }
@@ -554,7 +534,6 @@ impl UTransport for UPClientZenoh {
         let listener_wrapper = ListenerWrapper::new(&listener);
 
         if topic.authority.is_some() && topic.entity.is_none() && topic.resource.is_none() {
-            println!("identified as special uuri");
             // This is special UUri which means we need to register for all of Publish, Request, and Response
             // RPC response
             self.register_response_listener(&topic, listener_wrapper.clone())?;
