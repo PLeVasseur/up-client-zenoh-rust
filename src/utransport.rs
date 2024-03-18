@@ -211,15 +211,14 @@ impl UPClientZenoh {
 
         // Serialized UAttributes into protobuf
         let Ok(attachment) = UPClientZenoh::uattributes_to_attachment(&attributes) else {
-            log::error!("send_response: Invalide uAttributes");
+            log::error!("send_response: Invalid UAttributes");
             return Err(UStatus::fail_with_code(
                 UCode::INVALID_ARGUMENT,
-                "Invalid uAttributes",
+                "Invalid UAttributes",
             ));
         };
         // Get reqid
         let reqid = attributes.reqid.to_string();
-
         // Send back query
         let value = Value::new(buf.into()).encoding(Encoding::WithSuffix(
             KnownEncoding::AppCustom,
@@ -402,7 +401,7 @@ impl UPClientZenoh {
             query_map
                 .lock()
                 .unwrap()
-                .insert(u_attribute.reqid.to_string(), query);
+                .insert(u_attribute.id.to_string(), query);
             listener_wrapper.on_receive(Ok(msg));
         };
         if let Ok(queryable) = self

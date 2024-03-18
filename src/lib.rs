@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use up_rust::listener_wrapper::ListenerWrapper;
-use up_rust::{UAttributes, UCode, UMessageType, UPayloadFormat, UPriority, UStatus, UUri};
+use up_rust::{UAttributes, UAuthority, UCode, UEntity, UMessageType, UPayloadFormat, UPriority, UStatus, UUIDBuilder, UUri};
 use zenoh::{
     config::Config,
     prelude::r#async::*,
@@ -47,34 +47,15 @@ pub struct UPClientZenoh {
     query_map: Arc<Mutex<HashMap<String, Query>>>,
     // Save the callback for RPC response
     rpc_callback_map: Arc<Mutex<HashMap<UUri, HashSet<Arc<ListenerWrapper>>>>>,
+    uuid_builder: UUIDBuilder,
+    authority: UAuthority,
+    entity: UEntity,
 }
 
 impl UPClientZenoh {
-    pub async fn check_for_uuri_in_maps(&self, uuri: &UUri) {
-        let mut subscriber_map_guard = self.subscriber_map.lock().unwrap();
-
-        let listeners = subscriber_map_guard.entry(uuri.clone());
-        match listeners {
-            Entry::Vacant(_) => {
-                let fail = UStatus::fail_with_code(
-                    UCode::NOT_FOUND,
-                    format!("No listeners registered for topic: {:?}", &uuri),
-                );
-
-                println!("subscriber_map contains nothing for that uuri: {fail:?}");
-            }
-            Entry::Occupied(mut e) => {
-                let occupied = e.get_mut();
-                for o in occupied.iter() {
-                    println!("there is a subscriber: {:?}", &o.1);
-                }
-            }
-        }
-    }
-
     /// # Errors
     /// Will return `Err` if unable to create Zenoh session
-    pub async fn new(config: Config) -> Result<UPClientZenoh, UStatus> {
+    pub async fn new(config: Config, authority: UAuthority, entity: UEntity) -> Result<UPClientZenoh, UStatus> {
         let Ok(session) = zenoh::open(config).res().await else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
@@ -87,6 +68,9 @@ impl UPClientZenoh {
             queryable_map: Arc::new(Mutex::new(HashMap::new())),
             query_map: Arc::new(Mutex::new(HashMap::new())),
             rpc_callback_map: Arc::new(Mutex::new(HashMap::new())),
+            uuid_builder: UUIDBuilder::new(),
+            authority,
+            entity
         })
     }
 
