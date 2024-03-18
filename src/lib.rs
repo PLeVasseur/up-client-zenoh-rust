@@ -22,7 +22,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 use up_rust::listener_wrapper::ListenerWrapper;
-use up_rust::{UAttributes, UAuthority, UCode, UEntity, UMessageType, UPayloadFormat, UPriority, UStatus, UUIDBuilder, UUri};
+use up_rust::{
+    UAttributes, UAuthority, UCode, UEntity, UMessageType, UPayloadFormat, UPriority, UStatus,
+    UUIDBuilder, UUri,
+};
 use zenoh::{
     config::Config,
     prelude::r#async::*,
@@ -55,7 +58,11 @@ pub struct UPClientZenoh {
 impl UPClientZenoh {
     /// # Errors
     /// Will return `Err` if unable to create Zenoh session
-    pub async fn new(config: Config, authority: UAuthority, entity: UEntity) -> Result<UPClientZenoh, UStatus> {
+    pub async fn new(
+        config: Config,
+        authority: UAuthority,
+        entity: UEntity,
+    ) -> Result<UPClientZenoh, UStatus> {
         let Ok(session) = zenoh::open(config).res().await else {
             return Err(UStatus::fail_with_code(
                 UCode::INTERNAL,
@@ -70,7 +77,7 @@ impl UPClientZenoh {
             rpc_callback_map: Arc::new(Mutex::new(HashMap::new())),
             uuid_builder: UUIDBuilder::new(),
             authority,
-            entity
+            entity,
         })
     }
 

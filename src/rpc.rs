@@ -14,7 +14,11 @@
 use crate::UPClientZenoh;
 use async_trait::async_trait;
 use std::{string::ToString, time::Duration};
-use up_rust::{CallOptions, Data, RpcClient, RpcClientResult, RpcMapperError, RpcServer, UMessage, UPayload, UResourceBuilder, UriValidator, UStatus, UUri, UMessageBuilder, UTransport, UUIDBuilder};
+use up_rust::{
+    CallOptions, Data, RpcClient, RpcClientResult, RpcMapperError, RpcServer, UMessage,
+    UMessageBuilder, UPayload, UResourceBuilder, UStatus, UTransport, UUIDBuilder, UUri,
+    UriValidator,
+};
 use zenoh::prelude::r#async::*;
 
 // TODO: Need to check how to use CallOptions

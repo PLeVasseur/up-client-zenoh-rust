@@ -12,8 +12,8 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 use async_std::task::{self, block_on};
-use std::{sync::Arc, time};
 use protobuf::Message;
+use std::{sync::Arc, time};
 use up_client_zenoh::UPClientZenoh;
 use up_rust::ulistener::UListener;
 use up_rust::{
@@ -119,7 +119,9 @@ impl UListener for FooListener {
 
 #[async_std::test]
 async fn test_utransport_register_and_unregister() {
-    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
+    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+        .await
+        .unwrap();
     let uuri = create_utransport_uuri(0);
 
     let foo_listener = Arc::new(FooListener);
@@ -150,7 +152,9 @@ async fn test_utransport_register_and_unregister() {
 
 #[async_std::test]
 async fn test_rpcserver_register_and_unregister() {
-    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
+    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+        .await
+        .unwrap();
     let uuri = create_rpcserver_uuri();
 
     let foo_listener = Arc::new(FooListener);
@@ -174,7 +178,9 @@ async fn test_rpcserver_register_and_unregister() {
 
 #[async_std::test]
 async fn test_utransport_special_uuri_register_and_unregister() {
-    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
+    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+        .await
+        .unwrap();
     let uuri = create_special_uuri();
 
     let foo_listener = Arc::new(FooListener);
@@ -237,11 +243,14 @@ impl UListener for PubSubTestListener {
 #[async_std::test]
 async fn test_publish_and_subscribe() {
     let target_data = String::from("Hello World!");
-    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
+    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+        .await
+        .unwrap();
     let topic = create_utransport_uuri(0);
 
     // Register the listener
-    let pub_sub_test_listener = Arc::new(PubSubTestListener::new(topic.clone(), target_data.clone()));
+    let pub_sub_test_listener =
+        Arc::new(PubSubTestListener::new(topic.clone(), target_data.clone()));
     let register_res = upclient
         .register_listener(topic.clone(), &pub_sub_test_listener)
         .await;
@@ -304,19 +313,20 @@ impl UListener for NotifTestListener {
 #[async_std::test]
 async fn test_notification_and_subscribe() {
     let target_data = String::from("Hello World!");
-    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
+    let upclient = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+        .await
+        .unwrap();
     let origin_uuri = create_utransport_uuri(1);
     let destination_uuri = create_utransport_uuri(2);
 
     // Register the listener
-    let test_correct_received_listener =
-        Arc::new(NotifTestListener::new(destination_uuri.clone(), target_data.clone()));
+    let test_correct_received_listener = Arc::new(NotifTestListener::new(
+        destination_uuri.clone(),
+        target_data.clone(),
+    ));
 
     let register_res = upclient
-        .register_listener(
-            destination_uuri.clone(),
-            &test_correct_received_listener,
-        )
+        .register_listener(destination_uuri.clone(), &test_correct_received_listener)
         .await;
     assert_eq!(register_res, Ok(()));
 
@@ -337,10 +347,7 @@ async fn test_notification_and_subscribe() {
 
     // Cleanup
     let unregister_res = upclient
-        .unregister_listener(
-            destination_uuri.clone(),
-            &test_correct_received_listener,
-        )
+        .unregister_listener(destination_uuri.clone(), &test_correct_received_listener)
         .await;
     assert_eq!(unregister_res, Ok(()));
 }
@@ -353,14 +360,18 @@ struct RpcTestListener {
 }
 
 impl RpcTestListener {
-    pub fn new(expected_request_data: &str, response_data: &str, upclient_server: &Arc<UPClientZenoh>) -> Self{
+    pub fn new(
+        expected_request_data: &str,
+        response_data: &str,
+        upclient_server: &Arc<UPClientZenoh>,
+    ) -> Self {
         let expected_request_data = Arc::new(expected_request_data.to_string());
         let response_data = Arc::new(response_data.to_string());
         let upclient_server = upclient_server.clone();
         Self {
             expected_request_data,
             response_data,
-            upclient_server
+            upclient_server,
         }
     }
 }
@@ -417,14 +428,29 @@ impl UListener for RpcTestListener {
 
 #[async_std::test]
 async fn test_rpc_server_client() {
-    let upclient_client = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
-    let upclient_server = Arc::new(UPClientZenoh::new(Config::default(), create_authority(), create_rpcserver_uuri().entity.unwrap()).await.unwrap());
+    let upclient_client =
+        UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+            .await
+            .unwrap();
+    let upclient_server = Arc::new(
+        UPClientZenoh::new(
+            Config::default(),
+            create_authority(),
+            create_rpcserver_uuri().entity.unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
     let request_data = String::from("This is the request data");
     let response_data = String::from("This is the response data");
     let uuri = create_rpcserver_uuri();
 
     // setup RpcServer callback
-    let rpc_test_listener = Arc::new(RpcTestListener::new(&request_data, &response_data, &upclient_server));
+    let rpc_test_listener = Arc::new(RpcTestListener::new(
+        &request_data,
+        &response_data,
+        &upclient_server,
+    ));
     upclient_server
         .register_listener(uuri.clone(), &rpc_test_listener)
         .await
@@ -529,8 +555,14 @@ impl UListener for TestAuthorityOnlyRegisterListener {
 
 #[async_std::test]
 async fn test_register_listener_with_special_uuri() {
-    let upclient1 = Arc::new(UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap());
-    let upclient2 = UPClientZenoh::new(Config::default(), create_authority(), create_entity()).await.unwrap();
+    let upclient1 = Arc::new(
+        UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+            .await
+            .unwrap(),
+    );
+    let upclient2 = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+        .await
+        .unwrap();
     // Create data
     let publish_data = String::from("Hello World!");
     let request_data = String::from("This is the request data");
