@@ -15,9 +15,8 @@ use crate::UPClientZenoh;
 use async_trait::async_trait;
 use std::{string::ToString, time::Duration};
 use up_rust::{
-    CallOptions, Data, RpcClient, RpcClientResult, RpcMapperError, RpcServer, UMessage,
-    UMessageBuilder, UPayload, UResourceBuilder, UStatus, UTransport, UUIDBuilder, UUri,
-    UriValidator,
+    CallOptions, Data, RpcClient, RpcClientResult, RpcMapperError, UMessage, UMessageBuilder,
+    UPayload, UResourceBuilder, UUri, UriValidator,
 };
 use zenoh::prelude::r#async::*;
 
@@ -60,7 +59,6 @@ impl RpcClient for UPClientZenoh {
             source.authority = Some(self.authority.clone()).into();
         }
         source.resource = Some(UResourceBuilder::for_rpc_response()).into();
-        let msg_id = self.uuid_builder.build();
         // TODO: Check the ttl
         let umessage = if let Some(token) = options.token() {
             UMessageBuilder::request(topic, source, options.timeout())

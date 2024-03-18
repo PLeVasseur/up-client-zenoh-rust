@@ -12,14 +12,13 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 use async_std::task::{self, block_on};
-use protobuf::Message;
 use std::{sync::Arc, time};
 use up_client_zenoh::UPClientZenoh;
 use up_rust::ulistener::UListener;
 use up_rust::{
-    CallOptionsBuilder, Data, Number, RpcClient, RpcServer, UAuthority, UCode, UEntity, UMessage,
+    CallOptionsBuilder, Data, Number, RpcClient, UAuthority, UCode, UEntity, UMessage,
     UMessageBuilder, UMessageType, UPayload, UPayloadFormat, UResource, UResourceBuilder, UStatus,
-    UTransport, UUIDBuilder, UUri, UUID,
+    UTransport, UUIDBuilder, UUri,
 };
 use zenoh::config::Config;
 
@@ -626,7 +625,7 @@ async fn test_register_listener_with_special_uuri() {
 
     // Cleanup
     let unregister_res = upclient1
-        // .unregister_listener(publish_uuri.clone(), &listener)
         .unregister_listener(listener_uuri.clone(), &listener)
         .await;
+    assert_eq!(unregister_res, Ok(()));
 }

@@ -15,7 +15,6 @@ pub mod rpc;
 pub mod utransport;
 
 use protobuf::{Enum, Message};
-use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::{
     collections::HashMap,
@@ -23,8 +22,7 @@ use std::{
 };
 use up_rust::listener_wrapper::ListenerWrapper;
 use up_rust::{
-    UAttributes, UAuthority, UCode, UEntity, UMessageType, UPayloadFormat, UPriority, UStatus,
-    UUIDBuilder, UUri,
+    UAttributes, UAuthority, UCode, UEntity, UPayloadFormat, UPriority, UStatus, UUIDBuilder, UUri,
 };
 use zenoh::{
     config::Config,

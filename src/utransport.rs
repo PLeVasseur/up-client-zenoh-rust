@@ -530,7 +530,7 @@ impl UTransport for UPClientZenoh {
     where
         T: UListener,
     {
-        let listener_wrapper = ListenerWrapper::new(&listener);
+        let listener_wrapper = ListenerWrapper::new(listener);
 
         if topic.authority.is_some() && topic.entity.is_none() && topic.resource.is_none() {
             // This is special UUri which means we need to register for all of Publish, Request, and Response
@@ -563,11 +563,12 @@ impl UTransport for UPClientZenoh {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn unregister_listener<T>(&self, topic: UUri, listener: &Arc<T>) -> Result<(), UStatus>
     where
         T: UListener,
     {
-        let listener_wrapper = ListenerWrapper::new(&listener);
+        let listener_wrapper = ListenerWrapper::new(listener);
         let mut message_type = UMessageType::UMESSAGE_TYPE_UNSPECIFIED;
         let mut found_authority = false;
         if topic.authority.is_some() && topic.entity.is_none() && topic.resource.is_none() {
@@ -672,14 +673,14 @@ impl UTransport for UPClientZenoh {
         }
 
         if message_type == UMessageType::UMESSAGE_TYPE_UNSPECIFIED {
-            if found_authority {
-                return Ok(());
+            return if found_authority {
+                Ok(())
             } else {
-                return Err(UStatus::fail_with_code(
+                Err(UStatus::fail_with_code(
                     UCode::NOT_FOUND,
                     format!("No listeners registered for topic: {:?}", &topic),
-                ));
-            }
+                ))
+            };
         }
 
         Ok(())
