@@ -439,7 +439,6 @@ impl UPClientZenoh {
         Ok(())
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     fn register_response_listener(
         &self,
         topic: &UUri,
@@ -449,7 +448,13 @@ impl UPClientZenoh {
 
         let listeners = rpc_callback_map_guard.entry(topic.clone()).or_default();
 
-        listeners.insert(Arc::new(listener_wrapper));
+        let newly_added = listeners.insert(Arc::new(listener_wrapper));
+        if !newly_added {
+            return Err(UStatus::fail_with_code(
+                UCode::ALREADY_EXISTS,
+                format!("Same listener already registered to topic: {topic:?}"),
+            ));
+        }
 
         Ok(())
     }
