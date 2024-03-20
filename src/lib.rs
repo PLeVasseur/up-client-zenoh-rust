@@ -20,6 +20,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+use std::ops::Deref;
 use up_rust::listener_wrapper::ListenerWrapper;
 use up_rust::{
     UAttributes, UAuthority, UCode, UEntity, UPayloadFormat, UPriority, UStatus, UUIDBuilder, UUri,
@@ -58,6 +59,28 @@ pub struct UPClientZenoh {
     authority: UAuthority,
     // used to form our source UUri when calling invoke_method()
     entity: UEntity,
+}
+
+pub struct UPZenohPeer {
+    up_client_zenoh: Arc<UPClientZenoh>
+}
+
+impl UPZenohPeer {
+    pub async fn new(authority: UAuthority, entity: UEntity) -> Result<Self, UStatus> {
+        let config = Config::default();
+        let up_client_zenoh = UPClientZenoh::new(config, authority, entity).await?;
+        Ok(Self {
+            up_client_zenoh: Arc::new(up_client_zenoh)
+        })
+    }
+}
+
+impl Deref for UPZenohPeer {
+    type Target = Arc<UPClientZenoh>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.up_client_zenoh
+    }
 }
 
 impl UPClientZenoh {

@@ -13,7 +13,7 @@
 //
 use async_std::task::{self, block_on};
 use std::{sync::Arc, time};
-use up_client_zenoh::UPClientZenoh;
+use up_client_zenoh::{UPClientZenoh, UPZenohPeer};
 use up_rust::ulistener::UListener;
 use up_rust::{
     CallOptionsBuilder, Data, Number, RpcClient, UAuthority, UEntity, UMessage, UMessageBuilder,
@@ -542,14 +542,16 @@ impl UListener for TestAuthorityOnlyRegisterListener {
 
 #[async_std::test]
 async fn test_register_listener_with_special_uuri() {
-    let upclient1 = Arc::new(
-        UPClientZenoh::new(Config::default(), create_authority(), create_entity())
-            .await
-            .unwrap(),
-    );
-    let upclient2 = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
-        .await
-        .unwrap();
+    // let upclient1 = Arc::new(
+    //     UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+    //         .await
+    //         .unwrap(),
+    // );
+    // let upclient2 = UPClientZenoh::new(Config::default(), create_authority(), create_entity())
+    //     .await
+    //     .unwrap();
+    let upclient1 = Arc::new(UPZenohPeer::new(create_authority(), create_entity()).await.unwrap());
+    let upclient2 = UPZenohPeer::new(create_authority(), create_entity()).await.unwrap();
     // Create data
     let publish_data = String::from("Hello World!");
     let request_data = String::from("This is the request data");
