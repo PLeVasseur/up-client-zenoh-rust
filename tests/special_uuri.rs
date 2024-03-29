@@ -62,7 +62,7 @@ async fn test_register_listener_with_special_uuri() {
                     assert_eq!(request_data_cloned, value);
                     // Send back result
                     let umessage = UMessageBuilder::response_for_request(&attributes)
-                        .with_message_id(UUIDBuilder::new().build())
+                        .with_message_id(UUIDBuilder::build())
                         .build_with_payload(
                             response_data_cloned.as_bytes().to_vec().into(),
                             UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
@@ -93,7 +93,7 @@ async fn test_register_listener_with_special_uuri() {
 
         // Send Publish data
         let umessage = UMessageBuilder::publish(publish_uuri)
-            .with_message_id(UUIDBuilder::new().build())
+            .with_message_id(UUIDBuilder::build())
             .build_with_payload(
                 publish_data.as_bytes().to_vec().into(),
                 UPayloadFormat::UPAYLOAD_FORMAT_TEXT,

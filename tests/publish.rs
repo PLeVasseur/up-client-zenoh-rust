@@ -50,7 +50,7 @@ async fn test_publish_and_subscribe() {
 
     // Send UMessage
     let umessage = UMessageBuilder::publish(uuri.clone())
-        .with_message_id(UUIDBuilder::new().build())
+        .with_message_id(UUIDBuilder::build())
         .build_with_payload(
             target_data.as_bytes().to_vec().into(),
             UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
@@ -101,7 +101,7 @@ async fn test_notification_and_subscribe() {
     // Send UMessage
     // TODO: up_rust has bugs while creating UMessageBuilder::notification
     let umessage = UMessageBuilder::notification(src_uuri.clone(), dst_uuri.clone())
-        .with_message_id(UUIDBuilder::new().build())
+        .with_message_id(UUIDBuilder::build())
         .build_with_payload(
             target_data.as_bytes().to_vec().into(),
             UPayloadFormat::UPAYLOAD_FORMAT_TEXT,

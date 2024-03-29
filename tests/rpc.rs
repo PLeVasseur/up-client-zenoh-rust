@@ -54,7 +54,7 @@ async fn test_rpc_server_client() {
                 }
                 // Send back result
                 let umessage = UMessageBuilder::response_for_request(&attributes)
-                    .with_message_id(UUIDBuilder::new().build())
+                    .with_message_id(UUIDBuilder::build())
                     .build_with_payload(
                         response_data_cloned.as_bytes().to_vec().into(),
                         UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
@@ -130,7 +130,7 @@ async fn test_rpc_server_client() {
 
         // Send request
         let umessage = UMessageBuilder::request(dst_uuri.clone(), response_uuri, 3000)
-            .with_message_id(UUIDBuilder::new().build())
+            .with_message_id(UUIDBuilder::build())
             .build_with_payload(
                 request_data.as_bytes().to_vec().into(),
                 UPayloadFormat::UPAYLOAD_FORMAT_TEXT,

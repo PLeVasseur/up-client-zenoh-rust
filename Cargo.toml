@@ -21,5 +21,8 @@ prost = "0.12"
 prost-types = "0.12"
 protobuf = { version = "3.3" }
 rand = "0.8.5"
-up-rust = { git = "https://github.com/eclipse-uprotocol/up-rust", rev = "953ac0e8da3607330d6df183437114b916fd2879" }
+# temporary test of UUIDBuilder::build()
+up-rust = { git = "https://github.com/PLeVasseur/uprotocol-rust_fork", branch = "feature/uuidbuilder_thread-safe_proposal" }
+# upstream
+# up-rust = { git = "https://github.com/eclipse-uprotocol/up-rust", rev = "68c8a1d94f0006daf4ba135c9cbbfddcd793108d" }
 zenoh = { version = "0.10.1-rc", features = ["unstable"]}
