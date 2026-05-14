@@ -13,7 +13,7 @@
 
 mod common;
 
-use up_rust::{LocalUriProvider, RawBytes, StaticUriProvider, UFrameHeader, UOwnedTransportExt};
+use up_rust::{LocalUriProvider, RawBytes, StaticUriProvider, UFrameMetadata, UOwnedTransportExt};
 use up_transport_zenoh::UPTransportZenoh;
 
 #[tokio::main]
@@ -35,7 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             topic.to_uri(false)
         );
         transport
-            .send_serialized::<RawBytes, _>(UFrameHeader::publish(topic.clone()), &data.as_bytes())
+            .send_serialized::<RawBytes, _>(
+                UFrameMetadata::publish(topic.clone()),
+                &data.as_bytes(),
+            )
             .await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
     }

@@ -16,14 +16,14 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{error, trace};
 use up_rust::{
-    ComparableOwnedListener, UAttributes, UCode, UEncoding, UFrameHeader, UMessageType,
+    ComparableOwnedListener, UAttributes, UCode, UEncoding, UFrameMetadata, UMessageType,
     UOwnedFrame, UOwnedListener, UOwnedTransport, UPriority, UStatus, UUri, UUID,
 };
 use zenoh::{bytes::ZBytes, qos::Priority};
 
 const FRAME_ATTACHMENT_MAGIC: &[u8; 4] = b"UFRM";
 
-fn frame_to_attachment(header: &UFrameHeader) -> anyhow::Result<ZBytes> {
+fn frame_to_attachment(header: &UFrameMetadata) -> anyhow::Result<ZBytes> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&crate::UPROTOCOL_MAJOR_VERSION.to_le_bytes());
     bytes.extend_from_slice(FRAME_ATTACHMENT_MAGIC);
@@ -56,7 +56,7 @@ fn frame_to_attachment(header: &UFrameHeader) -> anyhow::Result<ZBytes> {
     Ok(ZBytes::from(bytes))
 }
 
-pub(crate) fn attachment_to_frame_header(attachment: &ZBytes) -> anyhow::Result<UFrameHeader> {
+pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Result<UFrameMetadata> {
     let attachment_bytes = attachment.to_bytes();
     let mut bytes = attachment_bytes.as_ref();
     let version = take_u8(&mut bytes)?;
@@ -124,7 +124,7 @@ pub(crate) fn attachment_to_frame_header(attachment: &ZBytes) -> anyhow::Result<
     if let Some(commstatus) = commstatus {
         attributes = attributes.with_commstatus(commstatus);
     }
-    Ok(UFrameHeader::new(
+    Ok(UFrameMetadata::new(
         attributes,
         UEncoding::new(format_id, content_type, schema_ref),
     ))
@@ -361,14 +361,14 @@ fn to_zenoh_key_string(src_uri: &UUri, dst_uri: Option<&UUri>, fallback_authorit
 #[async_trait]
 impl UOwnedTransport for UPTransportZenoh {
     async fn send_owned(&self, frame: UOwnedFrame) -> Result<(), UStatus> {
-        let header = frame.header();
+        let header = frame.metadata();
         let zenoh_key = to_zenoh_key_string(
             header.attributes().source(),
             header.attributes().sink(),
             self.local_authority.as_str(),
         );
         let attachment = frame_to_attachment(header).map_err(|e| {
-            let msg = format!("Unable to transform UFrameHeader to attachment: {e}");
+            let msg = format!("Unable to transform UFrameMetadata to attachment: {e}");
             error!("{msg}");
             UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg)
         })?;

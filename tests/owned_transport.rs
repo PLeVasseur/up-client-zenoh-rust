@@ -20,7 +20,7 @@ use protobuf::well_known_types::wrappers::StringValue;
 use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
-    ProtobufWire, UAttributes, UCode, UDeserializer, UEncoding, UFrameHeader, UMessageType,
+    ProtobufWire, UAttributes, UCode, UDeserializer, UEncoding, UFrameMetadata, UMessageType,
     UOwnedFrame, UOwnedListener, UOwnedTransport, UOwnedTransportExt, UPriority, USerializer, UUri,
     UWireError, WireFormat, UUID,
 };
@@ -123,14 +123,14 @@ async fn owned_transport_round_trips_custom_wire_format() -> Result<(), Box<dyn 
         counter: 42,
     };
     transport
-        .send_serialized::<TestReadingWire, _>(UFrameHeader::publish(topic), &reading)
+        .send_serialized::<TestReadingWire, _>(UFrameMetadata::publish(topic), &reading)
         .await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await?
         .expect("receiver closed");
 
-    assert_eq!(frame.header().encoding(), &TestReadingWire::encoding());
+    assert_eq!(frame.metadata().encoding(), &TestReadingWire::encoding());
     assert_eq!(
         frame.deserialize::<TestReadingWire, TestReading>()?,
         reading
@@ -156,7 +156,7 @@ async fn owned_transport_round_trips_protobuf_wire_format() -> Result<(), Box<dy
     payload.value = "protobuf over zenoh owned".to_string();
 
     transport
-        .send_serialized::<ProtobufWire, _>(UFrameHeader::publish(topic), &payload)
+        .send_serialized::<ProtobufWire, _>(UFrameMetadata::publish(topic), &payload)
         .await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -164,7 +164,7 @@ async fn owned_transport_round_trips_protobuf_wire_format() -> Result<(), Box<dy
         .expect("receiver closed");
     let decoded: StringValue = frame.deserialize::<ProtobufWire, _>()?;
 
-    assert_eq!(frame.header().encoding(), &ProtobufWire::encoding());
+    assert_eq!(frame.metadata().encoding(), &ProtobufWire::encoding());
     assert_eq!(decoded.value, payload.value);
     Ok(())
 }
@@ -207,7 +207,7 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
 
     transport
         .send_serialized::<TestReadingWire, _>(
-            UFrameHeader::new(attributes, TestReadingWire::encoding()),
+            UFrameMetadata::new(attributes, TestReadingWire::encoding()),
             &reading,
         )
         .await?;
@@ -215,7 +215,7 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
     let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await?
         .expect("receiver closed");
-    let received = frame.header().attributes();
+    let received = frame.metadata().attributes();
 
     assert_eq!(received.id(), &id);
     assert_eq!(received.source(), &source);
@@ -231,7 +231,7 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
     assert_eq!(received.token(), Some("transport-auth-token"));
     assert_eq!(received.permission_level(), Some(7));
     assert_eq!(received.commstatus(), Some(UCode::UNAVAILABLE));
-    assert_eq!(frame.header().encoding(), &TestReadingWire::encoding());
+    assert_eq!(frame.metadata().encoding(), &TestReadingWire::encoding());
     assert_eq!(
         frame.deserialize::<TestReadingWire, TestReading>()?,
         reading

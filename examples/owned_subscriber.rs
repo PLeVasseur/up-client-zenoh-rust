@@ -27,8 +27,8 @@ impl UOwnedListener for SubscriberListener {
     async fn on_receive_owned(&self, frame: UOwnedFrame) {
         println!(
             "Received owned frame [source: {}, encoding: {}, payload: {}]",
-            frame.header().source().to_uri(false),
-            frame.header().encoding().content_type(),
+            frame.metadata().source().to_uri(false),
+            frame.metadata().encoding().content_type(),
             String::from_utf8_lossy(frame.payload_bytes())
         );
     }

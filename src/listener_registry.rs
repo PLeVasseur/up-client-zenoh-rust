@@ -67,10 +67,10 @@ impl ListenerRegistry {
                 );
                 return;
             };
-            let header = match crate::utransport::attachment_to_frame_header(attachment) {
+            let header = match crate::utransport::attachment_to_frame_metadata(attachment) {
                 Ok(header) => header,
                 Err(e) => {
-                    warn!("Unable to transform attachment to valid UFrameHeader: {e:?}");
+                    warn!("Unable to transform attachment to valid UFrameMetadata: {e:?}");
                     return;
                 }
             };
