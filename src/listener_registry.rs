@@ -11,14 +11,25 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use tokio::sync::Mutex;
 use tracing::{debug, enabled, warn, Level};
 use up_rust::{ComparableOwnedListener, UCode, UOwnedFrame, UOwnedListener, UStatus};
 use zenoh::{pubsub::Subscriber, sample::Sample, Session};
 
-type OwnedSubscriberMap = Mutex<HashMap<(String, ComparableOwnedListener), Subscriber<()>>>;
+type OwnedSubscriberMap = Mutex<HashMap<(String, ComparableOwnedListener), RegisteredSubscriber>>;
+
+struct RegisteredSubscriber {
+    subscriber: Subscriber<()>,
+    active: Arc<AtomicBool>,
+}
 
 pub(crate) struct ListenerRegistry {
     owned_subscribers: OwnedSubscriberMap,
@@ -58,7 +69,12 @@ impl ListenerRegistry {
         }
 
         let listener_to_invoke_in_callback = comparable_listener.clone();
+        let active = Arc::new(AtomicBool::new(true));
+        let active_in_callback = active.clone();
         let callback = move |sample: Sample| {
+            if !active_in_callback.load(Ordering::Acquire) {
+                return;
+            }
             let listener_cloned = listener_to_invoke_in_callback.clone();
             let Some(attachment) = sample.attachment() else {
                 warn!(
@@ -95,7 +111,10 @@ impl ListenerRegistry {
             .await
         {
             Ok(subscriber) => {
-                locked_subscribers.insert((zenoh_key, comparable_listener), subscriber);
+                locked_subscribers.insert(
+                    (zenoh_key, comparable_listener),
+                    RegisteredSubscriber { subscriber, active },
+                );
                 Ok(())
             }
             Err(e) => {
@@ -111,18 +130,28 @@ impl ListenerRegistry {
         key_expr: &str,
         listener: ComparableOwnedListener,
     ) -> Result<(), UStatus> {
-        if self
+        let registered_subscriber = self
             .owned_subscribers
             .lock()
             .await
             .remove(&(key_expr.to_string(), listener.clone()))
-            .is_none()
-        {
-            return Err(UStatus::fail_with_code(
-                UCode::NOT_FOUND,
-                format!("No such owned listener registered for key expression: {key_expr}"),
-            ));
-        }
+            .ok_or_else(|| {
+                UStatus::fail_with_code(
+                    UCode::NOT_FOUND,
+                    format!("No such owned listener registered for key expression: {key_expr}"),
+                )
+            })?;
+        registered_subscriber.active.store(false, Ordering::Release);
+        registered_subscriber
+            .subscriber
+            .undeclare()
+            .await
+            .map_err(|e| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("failed to undeclare Zenoh subscriber: {e}"),
+                )
+            })?;
         Ok(())
     }
 }
