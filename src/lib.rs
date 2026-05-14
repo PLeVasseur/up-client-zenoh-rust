@@ -44,7 +44,7 @@ const DEFAULT_MAX_LISTENERS: usize = 100;
 /// An Eclipse Zenoh &trade; based uProtocol transport implementation.
 ///
 /// The transport registers callbacks on the Zenoh runtime for listeners that
-/// are being registered using `up_rust::UTransport::register_listener`.
+/// are being registered using `up_rust::UOwnedTransport::register_owned_listener`.
 ///
 /// <div class="warning">
 ///
