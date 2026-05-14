@@ -23,20 +23,10 @@ The [examples](examples) folder contains sample code illustrating how the crate 
 Assume you're using debug build.[^1]
 
 ```shell
-# Publisher
-./target/debug/examples/publisher
-# Subscriber
-./target/debug/examples/subscriber
-# Notifier
-./target/debug/examples/notifier
-# Notification Receiver
-./target/debug/examples/notification_receiver
-# RPC Server
-./target/debug/examples/rpc_server
-# RPC Client
-./target/debug/examples/rpc_client
-# L2 RPC Client
-./target/debug/examples/l2_rpc_client
+# Owned-frame publisher
+./target/debug/examples/owned_publisher
+# Owned-frame subscriber
+./target/debug/examples/owned_subscriber
 ```
 
 For the advanced Zenoh configuration, you can either use `-h` to see more details or pass the configuration file with `-c`.
@@ -44,7 +34,7 @@ The example configuration file is located in the [config folder](config).
 
 ## Using the Library
 
-Most developers will want to create an instance of the *UPTransportZenoh* struct and use it with the Communication Level API and its default implementation which are provided by the *up-rust* library.
+Most developers will want to create an instance of the *UPTransportZenoh* struct and use it as a native owned-frame transport with the Communication Level API provided by the *up-rust* library.
 
 Both libraries need to be added as dependencies to your crate, e.g. using the following commands:
 
@@ -53,7 +43,7 @@ cargo add up-rust
 cargo add up-transport-zenoh
 ```
 
-Please refer to the [publisher](examples/publisher.rs) and [subscriber](examples/subscriber.rs) examples to see how to initialize and use the transport.
+Please refer to the [owned publisher](examples/owned_publisher.rs) and [owned subscriber](examples/owned_subscriber.rs) examples to see how to initialize and use the transport.
 
 ### Supported Service Classes
 `uman~supported-service-classes~1`
@@ -67,7 +57,7 @@ Covers:
 `uman~supported-message-delivery-methods~1`
 
 The transport provided by this crate supports the [push delivery method](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/README.adoc#5-message-delivery) only.
-The `UPTransportZenoh::receive` function therefore always returns `UCode::UNIMPLEMENTED`.
+The `UPTransportZenoh::receive_owned` function therefore always returns `UCode::UNIMPLEMENTED`.
 
 Covers:
 - `req~utransport-delivery-methods~1`
@@ -97,7 +87,7 @@ Covers:
 ### Message Delivery
 `dsn~supported-message-delivery-methods~1`
 
-All messages are being received by means of registering callbacks for relevant Zenoh key patterns and delivering the messages to listeners that have been registered via `UPTransportZenoh::register_listener`.
+All messages are being received by means of registering callbacks for relevant Zenoh key patterns and delivering the messages to listeners that have been registered via `UPTransportZenoh::register_owned_listener`.
 The callbacks dispatch all incoming messages to the registered listeners on the _same_ thread that the Zenoh runtime runs on.
 
 Rationale:
