@@ -36,6 +36,8 @@ The example configuration file is located in the [config folder](config).
 
 Most developers will want to create an instance of the *UPTransportZenoh* struct and use it as a native owned-frame transport with the Communication Level API provided by the *up-rust* library.
 
+`UPTransportZenoh` implements `UOwnedTransport`. It preserves native `UFrameMetadata`, including `UAttributes` and `UEncoding`, in the Zenoh attachment while carrying the application payload as Zenoh payload bytes. `UEncoding.schema_ref` is preserved when present so typed decoders can enforce schema-aware compatibility after receive. Zenoh does not expose a true transmit-loan or receive-lease API in this binding, so this transport intentionally does not implement `UZeroCopyTransport`.
+
 Both libraries need to be added as dependencies to your crate, e.g. using the following commands:
 
 ```sh
