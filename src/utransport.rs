@@ -122,7 +122,7 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
         attributes = attributes.with_permission_level(permission_level);
     }
     if let Some(commstatus) = commstatus {
-        attributes = attributes.with_commstatus(commstatus);
+        attributes = attributes.with_comm_status(commstatus);
     }
     Ok(UFrameMetadata::new(
         attributes,

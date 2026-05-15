@@ -199,7 +199,7 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
     .with_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
     .with_token("transport-auth-token")
     .with_permission_level(7)
-    .with_commstatus(UCode::UNAVAILABLE);
+    .with_comm_status(UCode::UNAVAILABLE);
     let reading = TestReading {
         sensor_id: 11,
         counter: 121,

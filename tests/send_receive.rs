@@ -149,7 +149,7 @@ async fn rpc_response_frame_gets_delivered_to_listener() -> Result<(), Box<dyn s
     let frame = UMessageBuilder::response(reply_to, UUID::build(), invoked_method)
         .with_priority(UPriority::CS5)
         .with_traceparent("traceparent")
-        .with_commstatus(UCode::NOT_FOUND)
+        .with_comm_status(UCode::NOT_FOUND)
         .build_with_raw_payload(MESSAGE_DATA)?;
 
     register_listener_and_send("vehicle1", frame, &source_filter, Some(&sink_filter)).await
