@@ -27,8 +27,8 @@ fn frame_to_attachment(header: &UFrameMetadata) -> anyhow::Result<ZBytes> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&crate::UPROTOCOL_MAJOR_VERSION.to_le_bytes());
     bytes.extend_from_slice(FRAME_ATTACHMENT_MAGIC);
-    write_u64(&mut bytes, header.attributes().id().msb);
-    write_u64(&mut bytes, header.attributes().id().lsb);
+    write_u64(&mut bytes, header.attributes().id().msb());
+    write_u64(&mut bytes, header.attributes().id().lsb());
     bytes.push(message_type_to_byte(header.attributes().message_type()));
     bytes.push(priority_to_byte(header.attributes().priority()));
     write_optional_u32(&mut bytes, header.attributes().ttl());
@@ -148,8 +148,8 @@ fn write_optional_uuid(dst: &mut Vec<u8>, value: Option<&UUID>) {
     match value {
         Some(value) => {
             dst.push(1);
-            write_u64(dst, value.msb);
-            write_u64(dst, value.lsb);
+            write_u64(dst, value.msb());
+            write_u64(dst, value.lsb());
         }
         None => dst.push(0),
     }
@@ -321,7 +321,7 @@ fn map_zenoh_priority(upriority: UPriority) -> Priority {
 }
 
 fn uri_to_zenoh_key(uri: &UUri, fallback_authority: &str) -> String {
-    let authority = if uri.authority_name.is_empty() {
+    let authority = if uri.authority_name().is_empty() {
         fallback_authority.to_string()
     } else {
         uri.authority_name()

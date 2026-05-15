@@ -89,12 +89,11 @@ async fn publish_frame_gets_delivered_to_listener(
 
     let topic = UUri::from_str(topic_uri)?;
     let source_filter = UUri::from_str(source_filter_uri)?;
-    let mut builder = UMessageBuilder::publish(topic);
-    builder
+    let mut builder = UMessageBuilder::publish(topic)
         .with_priority(UPriority::CS5)
         .with_traceparent("traceparent");
     if ttl > 0 {
-        builder.with_ttl(ttl);
+        builder = builder.with_ttl(ttl);
     }
     let frame = builder.build_with_raw_payload(MESSAGE_DATA)?;
 
