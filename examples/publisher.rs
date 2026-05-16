@@ -15,7 +15,7 @@
 
 mod common;
 
-use up_rust::{LocalUriProvider, StaticUriProvider, UMessageBuilder, UOwnedTransport};
+use up_rust::{LocalUriProvider, StaticUriProvider, UFrameBuilder, UOwnedTransport};
 use up_transport_zenoh::UPTransportZenoh;
 
 #[tokio::main]
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Publishing frame [topic: {}, payload: {data}]",
             topic.to_uri(false)
         );
-        let frame = UMessageBuilder::publish(topic.clone()).build_with_raw_payload(data)?;
+        let frame = UFrameBuilder::publish(topic.clone()).build_with_raw_payload(data)?;
         transport.send_owned(frame).await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
     }

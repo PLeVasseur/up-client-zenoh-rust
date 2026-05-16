@@ -19,7 +19,7 @@ use tokio::{
     sync::mpsc::Sender,
     time::{sleep, Duration},
 };
-use up_rust::{UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UUri, UUID};
+use up_rust::{UFrameBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UUri, UUID};
 
 struct DelayListener(Sender<UUID>);
 
@@ -59,7 +59,7 @@ async fn blocking_user_callback_does_not_block_frame_reception() {
     let mut buf = vec![];
     buf.put_u32(1000);
     let delayed_id = UUID::build();
-    let delayed_frame = UMessageBuilder::publish(topic.clone())
+    let delayed_frame = UFrameBuilder::publish(topic.clone())
         .with_message_id(delayed_id.clone())
         .build_with_raw_payload(buf)
         .expect("failed to create delayed frame");
@@ -69,7 +69,7 @@ async fn blocking_user_callback_does_not_block_frame_reception() {
         .expect("failed to send delayed frame");
 
     let immediate_id = UUID::build();
-    let immediate_frame = UMessageBuilder::publish(topic)
+    let immediate_frame = UFrameBuilder::publish(topic)
         .with_message_id(immediate_id.clone())
         .build()
         .expect("failed to create immediate frame");

@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use std::{str::FromStr, sync::Arc};
 use up_rust::{
-    LocalUriProvider, StaticUriProvider, UMessageBuilder, UOwnedFrame, UOwnedListener,
+    LocalUriProvider, StaticUriProvider, UFrameBuilder, UOwnedFrame, UOwnedListener,
     UOwnedTransport, UUri,
 };
 use up_transport_zenoh::UPTransportZenoh;
@@ -40,7 +40,7 @@ impl UOwnedListener for RpcListener {
                 .map_or_else(|| "<none>".to_string(), |sink| sink.to_uri(false))
         );
 
-        let response = UMessageBuilder::response_for_request(frame.metadata().attributes())
+        let response = UFrameBuilder::response_for_request(frame.metadata().attributes())
             .build_with_raw_payload(format!("{}", Utc::now()))
             .expect("failed to build response frame");
         let _ = self.0.send_owned(response).await;

@@ -16,7 +16,7 @@
 mod common;
 
 use std::str::FromStr;
-use up_rust::{LocalUriProvider, StaticUriProvider, UMessageBuilder, UOwnedTransport, UUri};
+use up_rust::{LocalUriProvider, StaticUriProvider, UFrameBuilder, UOwnedTransport, UUri};
 use up_transport_zenoh::UPTransportZenoh;
 
 #[tokio::main]
@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             source.to_uri(false),
             sink.to_uri(false)
         );
-        let frame = UMessageBuilder::notification(source.clone(), sink.clone())
+        let frame = UFrameBuilder::notification(source.clone(), sink.clone())
             .build_with_raw_payload(data)?;
         transport.send_owned(frame).await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;

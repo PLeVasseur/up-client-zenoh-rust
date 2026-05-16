@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use up_rust::{
-    LocalUriProvider, StaticUriProvider, UMessageBuilder, UOwnedFrame, UOwnedListener,
+    LocalUriProvider, StaticUriProvider, UFrameBuilder, UOwnedFrame, UOwnedListener,
     UOwnedTransport, UUri,
 };
 use up_transport_zenoh::UPTransportZenoh;
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    let request = UMessageBuilder::request(method.clone(), reply_to.clone(), REQUEST_TTL)
+    let request = UFrameBuilder::request(method.clone(), reply_to.clone(), REQUEST_TTL)
         .build_with_raw_payload("GetCurrentTime")?;
     println!(
         "Sending RPC request [from: {}, to: {}]",

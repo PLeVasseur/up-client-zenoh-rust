@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use tokio::{sync::Notify, time::Duration};
 use tracing::info;
 use up_rust::{
-    UCode, UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPriority, UStatus, UUri,
+    UCode, UFrameBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPriority, UStatus, UUri,
     UUID,
 };
 
@@ -89,7 +89,7 @@ async fn publish_frame_gets_delivered_to_listener(
 
     let topic = UUri::from_str(topic_uri)?;
     let source_filter = UUri::from_str(source_filter_uri)?;
-    let mut builder = UMessageBuilder::publish(topic)
+    let mut builder = UFrameBuilder::publish(topic)
         .with_priority(UPriority::CS5)
         .with_traceparent("traceparent");
     if ttl > 0 {
@@ -109,7 +109,7 @@ async fn notification_frame_gets_delivered_to_listener() -> Result<(), Box<dyn s
     let sink = UUri::from_str("//vehicle1/55A1/2/0")?;
     let source_filter = UUri::from_str("//vehicle1/10A10B/1/CA5D")?;
     let sink_filter = UUri::from_str("//vehicle1/FFFFFFFF/FF/0")?;
-    let frame = UMessageBuilder::notification(source, sink)
+    let frame = UFrameBuilder::notification(source, sink)
         .with_priority(UPriority::CS2)
         .with_traceparent("traceparent")
         .with_ttl(12_000)
@@ -127,7 +127,7 @@ async fn rpc_request_frame_gets_delivered_to_listener() -> Result<(), Box<dyn st
     let method_to_invoke = UUri::from_str("//vehicle1/55A1/2/A1")?;
     let source_filter = UUri::from_str("//vehicle1/10A10B/1/0")?;
     let sink_filter = UUri::from_str("//vehicle1/55A1/2/A1")?;
-    let frame = UMessageBuilder::request(method_to_invoke, reply_to, 5_000)
+    let frame = UFrameBuilder::request(method_to_invoke, reply_to, 5_000)
         .with_priority(UPriority::CS5)
         .with_token("token")
         .with_traceparent("traceparent")
@@ -146,7 +146,7 @@ async fn rpc_response_frame_gets_delivered_to_listener() -> Result<(), Box<dyn s
     let invoked_method = UUri::from_str("//vehicle1/55A1/2/A1")?;
     let source_filter = UUri::from_str("//vehicle1/55A1/2/A1")?;
     let sink_filter = UUri::from_str("//vehicle1/10A10B/1/0")?;
-    let frame = UMessageBuilder::response(reply_to, UUID::build(), invoked_method)
+    let frame = UFrameBuilder::response(reply_to, UUID::build(), invoked_method)
         .with_priority(UPriority::CS5)
         .with_traceparent("traceparent")
         .with_comm_status(UCode::NOT_FOUND)
@@ -166,7 +166,7 @@ async fn expired_rpc_request_frame_is_not_delivered_to_listener() {
     let sink_filter = UUri::from_str("//vehicle1/55A1/2/A1").expect("invalid URI");
     let expired_uuid = UUID::from_u64_pair(0x018D_548E_A8E0_7000, 0x8000_0000_0000_0000)
         .expect("valid expired UUID");
-    let frame = UMessageBuilder::request(method_to_invoke, reply_to, 5_000)
+    let frame = UFrameBuilder::request(method_to_invoke, reply_to, 5_000)
         .with_message_id(expired_uuid)
         .with_priority(UPriority::CS5)
         .with_token("token")
@@ -198,11 +198,11 @@ async fn unregister_listener_stops_processing_frames() {
     let topic = UUri::from_str("//vehicle/123/1/9000").expect("invalid topic");
     let first_id = UUID::build();
     let second_id = UUID::build();
-    let first_frame = UMessageBuilder::publish(topic.clone())
+    let first_frame = UFrameBuilder::publish(topic.clone())
         .with_message_id(first_id.clone())
         .build()
         .expect("failed to create frame");
-    let second_frame = UMessageBuilder::publish(topic)
+    let second_frame = UFrameBuilder::publish(topic)
         .with_message_id(second_id.clone())
         .build()
         .expect("failed to create frame");
