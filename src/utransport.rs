@@ -124,6 +124,13 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
     if let Some(commstatus) = commstatus {
         attributes = attributes.with_comm_status(commstatus);
     }
+    if !bytes.is_empty() {
+        return Err(UStatus::fail_with_code(
+            UCode::INVALID_ARGUMENT,
+            "trailing frame metadata bytes",
+        )
+        .into());
+    }
     Ok(UFrameMetadata::new(
         attributes,
         UEncoding::new(format_id, content_type, schema_ref),
@@ -412,5 +419,74 @@ impl UOwnedTransport for UPTransportZenoh {
         self.subscribers
             .unregister_owned(zenoh_key.as_str(), ComparableOwnedListener::new(listener))
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata_with_all_fields(id: UUID) -> UFrameMetadata {
+        let source = UUri::try_from("//vehicle/A8000/2/8001").unwrap();
+        let sink = UUri::try_from("//service/B8000/1/0").unwrap();
+        let request_id = UUID::build();
+        let attributes = UAttributes::new(id, source, Some(sink), UMessageType::Response)
+            .with_priority(UPriority::CS5)
+            .with_ttl(3_601)
+            .with_request_id(request_id)
+            .with_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+            .with_token("token")
+            .with_permission_level(7)
+            .with_comm_status(UCode::UNAVAILABLE);
+        UFrameMetadata::new(
+            attributes,
+            UEncoding::new(
+                "custom-json",
+                "application/custom+json",
+                Some("schema://example/type"),
+            ),
+        )
+    }
+
+    #[test]
+    fn native_attachment_round_trips_full_metadata() {
+        let metadata = metadata_with_all_fields(UUID::build());
+
+        let attachment = frame_to_attachment(&metadata).unwrap();
+        let decoded = attachment_to_frame_metadata(&attachment).unwrap();
+
+        assert_eq!(decoded, metadata);
+    }
+
+    #[test]
+    fn native_attachment_preserves_expired_ttl_metadata() {
+        let expired_id = UUID::from_u64_pair(0x018D_548E_A8E0_7000, 0x8000_0000_0000_0000)
+            .expect("valid expired UUID");
+        let metadata = metadata_with_all_fields(expired_id);
+
+        let attachment = frame_to_attachment(&metadata).unwrap();
+        let decoded = attachment_to_frame_metadata(&attachment).unwrap();
+
+        assert!(decoded.attributes().is_expired());
+    }
+
+    #[test]
+    fn native_attachment_rejects_malformed_metadata() {
+        let attachment = ZBytes::from(vec![0x01, b'B', b'A', b'D']);
+
+        assert!(attachment_to_frame_metadata(&attachment).is_err());
+    }
+
+    #[test]
+    fn native_attachment_rejects_trailing_metadata() {
+        let metadata = metadata_with_all_fields(UUID::build());
+        let attachment = frame_to_attachment(&metadata).unwrap();
+        let attachment_bytes = attachment.to_bytes();
+        let mut bytes = attachment_bytes.as_ref().to_vec();
+        bytes.push(0xff);
+
+        let error = attachment_to_frame_metadata(&ZBytes::from(bytes)).unwrap_err();
+
+        assert!(error.to_string().contains("trailing frame metadata bytes"));
     }
 }

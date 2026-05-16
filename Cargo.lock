@@ -3233,8 +3233,6 @@ dependencies = [
  "protoc-bin-vendored",
  "rand 0.9.1",
  "regex",
- "serde",
- "serde_json",
  "tokio",
  "tracing",
  "uriparse",
