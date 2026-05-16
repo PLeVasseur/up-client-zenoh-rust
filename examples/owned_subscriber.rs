@@ -28,7 +28,11 @@ impl UOwnedListener for SubscriberListener {
         println!(
             "Received owned frame [source: {}, encoding: {}, payload: {}]",
             frame.metadata().source().to_uri(false),
-            frame.metadata().encoding().content_type(),
+            frame
+                .metadata()
+                .encoding()
+                .map(up_rust::UEncoding::content_type)
+                .unwrap_or("none"),
             String::from_utf8_lossy(frame.payload_bytes())
         );
     }

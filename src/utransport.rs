@@ -16,8 +16,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{error, trace};
 use up_rust::{
-    ComparableOwnedListener, UAttributes, UCode, UEncoding, UFrameMetadata, UMessageType,
-    UOwnedFrame, UOwnedListener, UOwnedTransport, UPriority, UStatus, UUri, UUID,
+    transport::{verify_filter_criteria, ComparableOwnedListener},
+    validate_owned_frame_for_transport, UAttributes, UCode, UEncoding, UFrameMetadata,
+    UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport, UPriority, UStatus, UUri, UUID,
 };
 use zenoh::{bytes::ZBytes, qos::Priority};
 
@@ -42,12 +43,14 @@ fn frame_to_attachment(header: &UFrameMetadata) -> anyhow::Result<ZBytes> {
             .as_deref()
             .unwrap_or_default(),
     )?;
-    append_string(&mut bytes, header.encoding().format_id())?;
-    append_string(&mut bytes, header.encoding().content_type())?;
-    append_string(
-        &mut bytes,
-        header.encoding().schema_ref().unwrap_or_default(),
-    )?;
+    if let Some(encoding) = header.encoding() {
+        bytes.push(1);
+        append_string(&mut bytes, encoding.format_id())?;
+        append_string(&mut bytes, encoding.content_type())?;
+        append_string(&mut bytes, encoding.schema_ref().unwrap_or_default())?;
+    } else {
+        bytes.push(0);
+    }
     write_optional_uuid(&mut bytes, header.attributes().request_id());
     write_optional_string(&mut bytes, header.attributes().traceparent())?;
     write_optional_string(&mut bytes, header.attributes().token())?;
@@ -91,13 +94,26 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
             Some(UUri::try_from(sink.as_str())?)
         }
     };
-    let format_id = take_string(&mut bytes)?;
-    let content_type = take_string(&mut bytes)?;
-    let schema_ref = take_string(&mut bytes)?;
-    let schema_ref = if schema_ref.is_empty() {
-        None
-    } else {
-        Some(schema_ref)
+    let encoding = match take_u8(&mut bytes)? {
+        0 => None,
+        1 => {
+            let format_id = take_string(&mut bytes)?;
+            let content_type = take_string(&mut bytes)?;
+            let schema_ref = take_string(&mut bytes)?;
+            let schema_ref = if schema_ref.is_empty() {
+                None
+            } else {
+                Some(schema_ref)
+            };
+            Some(UEncoding::try_new(format_id, content_type, schema_ref)?)
+        }
+        _ => {
+            return Err(UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                "invalid payload encoding presence flag",
+            )
+            .into())
+        }
     };
     let request_id = take_optional_uuid(&mut bytes)?;
     let traceparent = take_optional_string(&mut bytes)?;
@@ -131,10 +147,7 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
         )
         .into());
     }
-    Ok(UFrameMetadata::new(
-        attributes,
-        UEncoding::new(format_id, content_type, schema_ref),
-    ))
+    Ok(UFrameMetadata::new(attributes, encoding))
 }
 
 fn write_u64(dst: &mut Vec<u8>, value: u64) {
@@ -368,6 +381,7 @@ fn to_zenoh_key_string(src_uri: &UUri, dst_uri: Option<&UUri>, fallback_authorit
 #[async_trait]
 impl UOwnedTransport for UPTransportZenoh {
     async fn send_owned(&self, frame: UOwnedFrame) -> Result<(), UStatus> {
+        validate_owned_frame_for_transport(&frame)?;
         let header = frame.metadata();
         let zenoh_key = to_zenoh_key_string(
             header.attributes().source(),
@@ -382,7 +396,7 @@ impl UOwnedTransport for UPTransportZenoh {
         let priority = map_zenoh_priority(header.attributes().priority());
 
         self.session
-            .put(&zenoh_key, frame.payload().clone())
+            .put(&zenoh_key, frame.payload_bytes())
             .priority(priority)
             .attachment(attachment)
             .await
@@ -399,7 +413,7 @@ impl UOwnedTransport for UPTransportZenoh {
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UOwnedListener>,
     ) -> Result<(), UStatus> {
-        up_rust::verify_filter_criteria(source_filter, sink_filter)?;
+        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -413,7 +427,7 @@ impl UOwnedTransport for UPTransportZenoh {
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UOwnedListener>,
     ) -> Result<(), UStatus> {
-        up_rust::verify_filter_criteria(source_filter, sink_filter)?;
+        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers

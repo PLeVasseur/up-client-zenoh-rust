@@ -21,7 +21,10 @@ use std::{
 
 use tokio::sync::Mutex;
 use tracing::{debug, enabled, warn, Level};
-use up_rust::{ComparableOwnedListener, UCode, UOwnedFrame, UOwnedListener, UStatus};
+use up_rust::{
+    transport::ComparableOwnedListener, validate_owned_frame_for_transport, UCode, UOwnedFrame,
+    UOwnedListener, UStatus,
+};
 use zenoh::{pubsub::Subscriber, sample::Sample, Session};
 
 type OwnedSubscriberMap = Mutex<HashMap<(String, ComparableOwnedListener), RegisteredSubscriber>>;
@@ -90,13 +93,18 @@ impl ListenerRegistry {
                     return;
                 }
             };
-            if !header.attributes().is_expired() {
-                let frame = UOwnedFrame::new(header, sample.payload().to_bytes().to_vec());
+            let frame = if header.encoding().is_some() {
+                UOwnedFrame::new(header, sample.payload().to_bytes().to_vec())
+            } else {
+                UOwnedFrame::without_payload(header)
+            };
+            let is_valid = validate_owned_frame_for_transport(&frame).is_ok();
+            if is_valid {
                 tokio::spawn(async move {
                     listener_cloned.on_receive_owned(frame).await;
                 });
             } else if enabled!(Level::DEBUG) {
-                let id = header.attributes().id();
+                let id = frame.metadata().attributes().id();
                 debug!(
                     "discarding expired frame [id: {}]",
                     id.to_hyphenated_string(),

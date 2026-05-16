@@ -20,9 +20,9 @@ use protobuf::well_known_types::wrappers::StringValue;
 use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
-    ProtobufWire, UAttributes, UCode, UDeserializer, UEncoding, UFrameMetadata, UMessageType,
-    UOwnedFrame, UOwnedListener, UOwnedTransport, UOwnedTransportExt, UPriority, USerializer, UUri,
-    UWireError, WireFormat, UUID,
+    wire::{UDeserializer, USerializer, UWireError, WireFormat},
+    ProtobufWire, UAttributes, UEncoding, UFrameMetadata, UMessageType, UOwnedFrame,
+    UOwnedListener, UOwnedTransport, UOwnedTransportExt, UPriority, UUri, UUID,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,7 +130,10 @@ async fn owned_transport_round_trips_custom_wire_format() -> Result<(), Box<dyn 
         .await?
         .expect("receiver closed");
 
-    assert_eq!(frame.metadata().encoding(), &TestReadingWire::encoding());
+    assert_eq!(
+        frame.metadata().encoding(),
+        Some(&TestReadingWire::encoding())
+    );
     assert_eq!(
         frame.deserialize::<TestReadingWire, TestReading>()?,
         reading
@@ -164,7 +167,7 @@ async fn owned_transport_round_trips_protobuf_wire_format() -> Result<(), Box<dy
         .expect("receiver closed");
     let decoded: StringValue = frame.deserialize::<ProtobufWire, _>()?;
 
-    assert_eq!(frame.metadata().encoding(), &ProtobufWire::encoding());
+    assert_eq!(frame.metadata().encoding(), Some(&ProtobufWire::encoding()));
     assert_eq!(decoded.value, payload.value);
     Ok(())
 }
@@ -186,7 +189,6 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
         .await?;
 
     let id = UUID::build();
-    let request_id = UUID::build();
     let attributes = UAttributes::new(
         id.clone(),
         source.clone(),
@@ -195,11 +197,7 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
     )
     .with_priority(UPriority::CS5)
     .with_ttl(5_000)
-    .with_request_id(request_id.clone())
-    .with_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
-    .with_token("transport-auth-token")
-    .with_permission_level(7)
-    .with_comm_status(UCode::UNAVAILABLE);
+    .with_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00");
     let reading = TestReading {
         sensor_id: 11,
         counter: 121,
@@ -223,15 +221,18 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
     assert_eq!(received.message_type(), UMessageType::Notification);
     assert_eq!(received.priority(), UPriority::CS5);
     assert_eq!(received.ttl(), Some(5_000));
-    assert_eq!(received.request_id(), Some(&request_id));
+    assert_eq!(received.request_id(), None);
     assert_eq!(
         received.traceparent(),
         Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
     );
-    assert_eq!(received.token(), Some("transport-auth-token"));
-    assert_eq!(received.permission_level(), Some(7));
-    assert_eq!(received.commstatus(), Some(UCode::UNAVAILABLE));
-    assert_eq!(frame.metadata().encoding(), &TestReadingWire::encoding());
+    assert_eq!(received.token(), None);
+    assert_eq!(received.permission_level(), None);
+    assert_eq!(received.commstatus(), None);
+    assert_eq!(
+        frame.metadata().encoding(),
+        Some(&TestReadingWire::encoding())
+    );
     assert_eq!(
         frame.deserialize::<TestReadingWire, TestReading>()?,
         reading
