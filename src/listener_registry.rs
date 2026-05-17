@@ -322,7 +322,7 @@ impl ComparableZeroCopyListener {
 
     fn pointer_address(&self) -> usize {
         let ptr = Arc::as_ptr(&self.listener);
-        let thin_ptr = ptr as *const ();
+        let thin_ptr = ptr.cast::<()>();
         thin_ptr as usize
     }
 }

@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        feature-flags: ["", "--no-default-features", "--all-features"]
+        feature-flags: ["", "--no-default-features", "--features zero-copy", "--all-features"]
     steps:
       - uses: actions/checkout@v4
         with:

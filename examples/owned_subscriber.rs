@@ -31,8 +31,7 @@ impl UOwnedListener for SubscriberListener {
             frame
                 .metadata()
                 .encoding()
-                .map(up_rust::UEncoding::content_type)
-                .unwrap_or("none"),
+                .map_or("none", up_rust::UEncoding::content_type),
             String::from_utf8_lossy(frame.payload_bytes())
         );
     }

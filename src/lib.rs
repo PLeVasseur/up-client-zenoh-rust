@@ -32,13 +32,13 @@ pub(crate) mod utransport;
 mod zero_copy;
 
 use std::sync::Arc;
-#[cfg(feature = "zero-copy-shm")]
+#[cfg(feature = "zero-copy")]
 use std::sync::OnceLock;
 
 use listener_registry::ListenerRegistry;
 use tracing::error;
 use up_rust::{UCode, UStatus, UUri};
-#[cfg(feature = "zero-copy-shm")]
+#[cfg(feature = "zero-copy")]
 use zenoh::{
     shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
     Wait,
@@ -51,12 +51,12 @@ pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
-#[cfg(feature = "zero-copy-shm")]
+#[cfg(feature = "zero-copy")]
 const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
-#[cfg(feature = "zero-copy-shm")]
+#[cfg(feature = "zero-copy")]
 type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
-#[cfg(feature = "zero-copy-shm")]
+#[cfg(feature = "zero-copy")]
 type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 
 /// An Eclipse Zenoh &trade; based uProtocol transport implementation.
@@ -77,7 +77,7 @@ pub struct UPTransportZenoh {
     session: Arc<Session>,
     subscribers: ListenerRegistry,
     local_authority: String,
-    #[cfg(feature = "zero-copy-shm")]
+    #[cfg(feature = "zero-copy")]
     shm_provider: OnceLock<ZenohShmProviderInit>,
 }
 
@@ -146,12 +146,12 @@ impl UPTransportZenoh {
             session: session_to_use.clone(),
             subscribers: ListenerRegistry::new(session_to_use, max_listeners),
             local_authority,
-            #[cfg(feature = "zero-copy-shm")]
+            #[cfg(feature = "zero-copy")]
             shm_provider: OnceLock::new(),
         }
     }
 
-    #[cfg(feature = "zero-copy-shm")]
+    #[cfg(feature = "zero-copy")]
     pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
         self.shm_provider
             .get_or_init(|| {

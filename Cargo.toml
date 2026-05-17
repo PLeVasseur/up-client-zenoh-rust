@@ -32,8 +32,8 @@ pedantic = "deny"
 
 [features]
 default = []
-zero-copy = []
-zero-copy-shm = ["zero-copy", "zenoh/shared-memory", "zenoh/unstable"]
+zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
+zero-copy-shm = ["zero-copy"]
 
 [dependencies]
 anyhow = "1.0.102"

@@ -11,7 +11,6 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-#[cfg(feature = "zero-copy-shm")]
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -28,7 +27,6 @@ use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
     sample::Sample,
 };
-#[cfg(feature = "zero-copy-shm")]
 use zenoh::{
     shm::{AllocAlignment, GarbageCollect, MemoryLayout, OwnedShmBuf, ZShmMut},
     Wait as _,
@@ -48,32 +46,28 @@ pub struct ZenohTxBuffer {
 }
 
 enum ZenohTxPayload {
-    Vec(Vec<u8>),
-    #[cfg(feature = "zero-copy-shm")]
+    Empty,
     Shm(ZShmMut),
 }
 
 impl ZenohTxPayload {
     fn as_slice(&self) -> &[u8] {
         match self {
-            Self::Vec(payload) => payload.as_slice(),
-            #[cfg(feature = "zero-copy-shm")]
+            Self::Empty => &[],
             Self::Shm(payload) => payload.as_ref(),
         }
     }
 
     fn as_mut_slice(&mut self) -> &mut [u8] {
         match self {
-            Self::Vec(payload) => payload.as_mut_slice(),
-            #[cfg(feature = "zero-copy-shm")]
+            Self::Empty => &mut [],
             Self::Shm(payload) => payload.as_mut(),
         }
     }
 
     fn into_zbytes(self) -> ZBytes {
         match self {
-            Self::Vec(payload) => ZBytes::from(payload),
-            #[cfg(feature = "zero-copy-shm")]
+            Self::Empty => ZBytes::new(),
             Self::Shm(payload) => ZBytes::from(payload),
         }
     }
@@ -107,6 +101,7 @@ impl ZenohRxFrame {
         Self { metadata, sample }
     }
 
+    #[must_use]
     pub fn sample(&self) -> &Sample {
         &self.sample
     }
@@ -175,7 +170,7 @@ impl UZeroCopyTransport for UPTransportZenoh {
             ));
         }
         validate_frame_metadata_for_payload(&metadata, metadata.encoding().is_some())?;
-        let payload = reserve_payload(self, payload_len, alignment).await?;
+        let payload = reserve_payload(self, payload_len, alignment)?;
         Ok(ZenohTxBuffer { metadata, payload })
     }
 
@@ -312,29 +307,13 @@ fn sink_matches(actual: Option<&UUri>, filter: Option<&UUri>) -> bool {
     filter.is_none_or(|filter| actual.is_some_and(|actual| filter.matches(actual)))
 }
 
-#[cfg(not(feature = "zero-copy-shm"))]
-async fn reserve_payload(
-    _transport: &UPTransportZenoh,
-    payload_len: usize,
-    alignment: usize,
-) -> Result<ZenohTxPayload, UStatus> {
-    if alignment > 1 {
-        return Err(UStatus::fail_with_code(
-            UCode::INVALID_ARGUMENT,
-            "Zenoh Vec-backed zero-copy reservation only supports byte alignment; enable zero-copy-shm for stronger alignment",
-        ));
-    }
-    Ok(ZenohTxPayload::Vec(vec![0_u8; payload_len]))
-}
-
-#[cfg(feature = "zero-copy-shm")]
-async fn reserve_payload(
+fn reserve_payload(
     transport: &UPTransportZenoh,
     payload_len: usize,
     alignment: usize,
 ) -> Result<ZenohTxPayload, UStatus> {
     if payload_len == 0 {
-        return Ok(ZenohTxPayload::Vec(Vec::new()));
+        return Ok(ZenohTxPayload::Empty);
     }
 
     let provider = transport.shm_provider()?;
@@ -373,7 +352,6 @@ async fn reserve_payload(
     Ok(ZenohTxPayload::Shm(payload))
 }
 
-#[cfg(feature = "zero-copy-shm")]
 fn allocation_alignment(alignment: usize) -> Result<AllocAlignment, UStatus> {
     let pow = u8::try_from(alignment.trailing_zeros()).map_err(|_| {
         UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "payload alignment is too large")
@@ -386,7 +364,6 @@ fn allocation_alignment(alignment: usize) -> Result<AllocAlignment, UStatus> {
     })
 }
 
-#[cfg(feature = "zero-copy-shm")]
 fn align_len(payload_len: usize, alignment: usize) -> Result<usize, UStatus> {
     let remainder = payload_len % alignment;
     if remainder == 0 {
