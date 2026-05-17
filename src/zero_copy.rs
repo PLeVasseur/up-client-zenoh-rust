@@ -24,7 +24,10 @@ use up_rust::{
     zero_copy::{UTxBuffer, UZeroCopyRxFrame, UZeroCopyTransport},
     UCode, UFrameMetadata, UStatus, UUri,
 };
-use zenoh::{bytes::ZBytes, sample::Sample};
+use zenoh::{
+    bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
+    sample::Sample,
+};
 #[cfg(feature = "zero-copy-shm")]
 use zenoh::{
     shm::{AllocAlignment, GarbageCollect, MemoryLayout, OwnedShmBuf, ZShmMut},
@@ -110,13 +113,17 @@ impl ZenohRxFrame {
 }
 
 impl UZeroCopyRxFrame for ZenohRxFrame {
+    type PayloadReader<'a>
+        = ZBytesReader<'a>
+    where
+        Self: 'a;
+    type PayloadSlices<'a>
+        = ZBytesSliceIterator<'a>
+    where
+        Self: 'a;
+
     fn metadata(&self) -> &UFrameMetadata {
         &self.metadata
-    }
-
-    fn payload(&self) -> &[u8] {
-        self.payload_contiguous()
-            .expect("Zenoh receive payload is segmented; use for_each_payload_slice")
     }
 
     fn payload_len(&self) -> usize {
@@ -127,7 +134,15 @@ impl UZeroCopyRxFrame for ZenohRxFrame {
         }
     }
 
-    fn payload_contiguous(&self) -> Option<&[u8]> {
+    fn payload_reader(&self) -> Self::PayloadReader<'_> {
+        self.sample.payload().reader()
+    }
+
+    fn payload_slices(&self) -> Self::PayloadSlices<'_> {
+        self.sample.payload().slices()
+    }
+
+    fn try_contiguous_payload(&self) -> Option<&[u8]> {
         if self.metadata.encoding().is_none() {
             return Some(&[]);
         }
@@ -137,15 +152,6 @@ impl UZeroCopyRxFrame for ZenohRxFrame {
             Some(first)
         } else {
             None
-        }
-    }
-
-    fn for_each_payload_slice(&self, visitor: &mut dyn FnMut(&[u8])) {
-        if self.metadata.encoding().is_none() {
-            return;
-        }
-        for slice in self.sample.payload().slices() {
-            visitor(slice);
         }
     }
 }
