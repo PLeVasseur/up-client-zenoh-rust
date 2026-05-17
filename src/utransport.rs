@@ -24,7 +24,7 @@ use zenoh::{bytes::ZBytes, qos::Priority};
 
 const FRAME_ATTACHMENT_MAGIC: &[u8; 4] = b"UFRM";
 
-fn frame_to_attachment(header: &UFrameMetadata) -> anyhow::Result<ZBytes> {
+pub(crate) fn frame_to_attachment(header: &UFrameMetadata) -> anyhow::Result<ZBytes> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&crate::UPROTOCOL_MAJOR_VERSION.to_le_bytes());
     bytes.extend_from_slice(FRAME_ATTACHMENT_MAGIC);
@@ -328,7 +328,7 @@ fn byte_to_priority(value: u8) -> Result<UPriority, UStatus> {
     }
 }
 
-fn map_zenoh_priority(upriority: UPriority) -> Priority {
+pub(crate) fn map_zenoh_priority(upriority: UPriority) -> Priority {
     match upriority {
         UPriority::CS0 => Priority::Background,
         UPriority::CS1 => Priority::DataLow,
@@ -369,7 +369,11 @@ fn uri_to_zenoh_key(uri: &UUri, fallback_authority: &str) -> String {
     format!("{authority}/{ue_type}/{ue_instance}/{ue_version_major}/{resource_id}")
 }
 
-fn to_zenoh_key_string(src_uri: &UUri, dst_uri: Option<&UUri>, fallback_authority: &str) -> String {
+pub(crate) fn to_zenoh_key_string(
+    src_uri: &UUri,
+    dst_uri: Option<&UUri>,
+    fallback_authority: &str,
+) -> String {
     let src = uri_to_zenoh_key(src_uri, fallback_authority);
     let dst = dst_uri.map_or_else(
         || "{}/{}/{}/{}/{}".to_string(),

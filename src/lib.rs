@@ -28,18 +28,36 @@ and does not spawn any threads itself.
 
 mod listener_registry;
 pub(crate) mod utransport;
+#[cfg(feature = "zero-copy")]
+mod zero_copy;
 
 use std::sync::Arc;
+#[cfg(feature = "zero-copy-shm")]
+use std::sync::OnceLock;
 
 use listener_registry::ListenerRegistry;
 use tracing::error;
 use up_rust::{UCode, UStatus, UUri};
+#[cfg(feature = "zero-copy-shm")]
+use zenoh::{
+    shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
+    Wait,
+};
 use zenoh::{Config, Session};
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
+#[cfg(feature = "zero-copy")]
+pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
+#[cfg(feature = "zero-copy-shm")]
+const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "zero-copy-shm")]
+type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
+#[cfg(feature = "zero-copy-shm")]
+type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 
 /// An Eclipse Zenoh &trade; based uProtocol transport implementation.
 ///
@@ -59,6 +77,8 @@ pub struct UPTransportZenoh {
     session: Arc<Session>,
     subscribers: ListenerRegistry,
     local_authority: String,
+    #[cfg(feature = "zero-copy-shm")]
+    shm_provider: OnceLock<ZenohShmProviderInit>,
 }
 
 impl UPTransportZenoh {
@@ -126,7 +146,27 @@ impl UPTransportZenoh {
             session: session_to_use.clone(),
             subscribers: ListenerRegistry::new(session_to_use, max_listeners),
             local_authority,
+            #[cfg(feature = "zero-copy-shm")]
+            shm_provider: OnceLock::new(),
         }
+    }
+
+    #[cfg(feature = "zero-copy-shm")]
+    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
+        self.shm_provider
+            .get_or_init(|| {
+                ShmProviderBuilder::default_backend(DEFAULT_SHM_SEGMENT_SIZE)
+                    .wait()
+                    .map(Arc::new)
+                    .map_err(|err| err.to_string())
+            })
+            .clone()
+            .map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("failed to initialize Zenoh SHM provider: {err}"),
+                )
+            })
     }
 
     /// Enables a tracing formatter subscriber that is initialized from the `RUST_LOG` environment variable.

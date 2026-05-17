@@ -30,6 +30,11 @@ pedantic = "deny"
 #restriction = "deny"
 #nursery = "deny"
 
+[features]
+default = []
+zero-copy = []
+zero-copy-shm = ["zero-copy", "zenoh/shared-memory", "zenoh/unstable"]
+
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1"
