@@ -40,6 +40,17 @@ use crate::{
     UPTransportZenoh,
 };
 
+/// Zenoh shared-memory transmit loan used by the `zero-copy` feature.
+///
+/// Values of this type are returned from
+/// [`UZeroCopyTransport::reserve`](up_rust::zero_copy::UZeroCopyTransport::reserve)
+/// for [`UPTransportZenoh`]. The payload storage is backed by Zenoh SHM when the
+/// frame has a payload. Frames without payload use an empty buffer and no SHM
+/// allocation.
+///
+/// Callers normally do not construct this type directly. Use
+/// [`UZeroCopyTransportExt::send_serialized_zero_copy`](up_rust::zero_copy::UZeroCopyTransportExt::send_serialized_zero_copy)
+/// to reserve, serialize into, and send a loan in one step.
 pub struct ZenohTxBuffer {
     metadata: UFrameMetadata,
     payload: ZenohTxPayload,
@@ -91,6 +102,19 @@ impl UTxBuffer for ZenohTxBuffer {
     }
 }
 
+/// Zenoh zero-copy receive lease used by the `zero-copy` feature.
+///
+/// The payload is exposed from Zenoh [`ZBytes`] through
+/// [`UZeroCopyRxFrame::payload_reader`] and
+/// [`UZeroCopyRxFrame::payload_slices`]. The lease may be segmented, so generic
+/// callers should use reader-based deserialization instead of assuming a
+/// contiguous borrowed slice. [`UZeroCopyRxFrame::try_contiguous_payload`] returns
+/// `Some` only when the underlying `ZBytes` payload is already one slice.
+///
+/// [`ZBytes`]: zenoh::bytes::ZBytes
+/// [`UZeroCopyRxFrame::payload_reader`]: up_rust::zero_copy::UZeroCopyRxFrame::payload_reader
+/// [`UZeroCopyRxFrame::payload_slices`]: up_rust::zero_copy::UZeroCopyRxFrame::payload_slices
+/// [`UZeroCopyRxFrame::try_contiguous_payload`]: up_rust::zero_copy::UZeroCopyRxFrame::try_contiguous_payload
 pub struct ZenohRxFrame {
     metadata: UFrameMetadata,
     sample: Sample,
@@ -101,6 +125,12 @@ impl ZenohRxFrame {
         Self { metadata, sample }
     }
 
+    /// Returns the underlying Zenoh sample.
+    ///
+    /// Most uProtocol code should use the [`UZeroCopyRxFrame`] methods instead.
+    /// This accessor is provided for Zenoh-specific diagnostics or advanced
+    /// integrations that need to inspect sample metadata outside the uProtocol
+    /// frame model.
     #[must_use]
     pub fn sample(&self) -> &Sample {
         &self.sample

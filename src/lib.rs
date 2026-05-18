@@ -13,9 +13,19 @@
 
 /*!
 This crate provides an implementation of the Eclipse Zenoh &trade; uProtocol Transport.
-The transport uses Zenoh's publish-subscribe mechanism to exchange messages. It is
-designed to be used in conjunction with the [up-rust](https://crates.io/crates/up_rust)
-crate, which provides the uProtocol message types and utilities.
+The transport uses Zenoh's publish-subscribe mechanism to exchange native
+uProtocol frames from the [up-rust](https://crates.io/crates/up_rust) crate.
+
+`UPTransportZenoh` always implements `up_rust::UOwnedTransport`. The owned path
+stores `UFrameMetadata` in Zenoh attachments and publishes the application
+payload as Zenoh payload bytes.
+
+When the `zero-copy` feature is enabled, `UPTransportZenoh` also implements
+`up_rust::zero_copy::UZeroCopyTransport`. The transmit path reserves Zenoh
+shared-memory payload buffers using Zenoh's `shared-memory` and `unstable`
+features. The receive path exposes Zenoh `ZBytes` through ordered readers and
+slice iterators and does not coalesce segmented payloads into an owned buffer
+unless callers explicitly cross an owned-frame adapter boundary.
 
 The transport is designed to run in the context of a [tokio `Runtime`] which
 needs to be configured outside of the transport according to the
@@ -25,6 +35,8 @@ and does not spawn any threads itself.
 
 [tokio `Runtime`]: https://docs.rs/tokio/latest/tokio/runtime/index.html
 */
+
+#![warn(rustdoc::bare_urls, rustdoc::broken_intra_doc_links)]
 
 mod listener_registry;
 pub(crate) mod utransport;
@@ -61,8 +73,17 @@ type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 
 /// An Eclipse Zenoh &trade; based uProtocol transport implementation.
 ///
-/// The transport registers callbacks on the Zenoh runtime for listeners that
-/// are being registered using `up_rust::UOwnedTransport::register_owned_listener`.
+/// The transport implements [`up_rust::UOwnedTransport`] in all builds. With the
+/// `zero-copy` feature enabled, it also implements
+/// [`up_rust::zero_copy::UZeroCopyTransport`] using Zenoh shared-memory payload
+/// buffers on transmit and `ZBytes` lease views on receive.
+///
+/// Listener registrations are push-oriented. The owned listener path registers
+/// callbacks on the Zenoh runtime for listeners registered through
+/// [`up_rust::UOwnedTransport::register_owned_listener`]. The zero-copy listener
+/// path, when enabled, registers independent subscribers for each listener so
+/// exact and wildcard registrations can receive the same matching frame without
+/// consuming a single shared receive value.
 ///
 /// <div class="warning">
 ///
@@ -180,24 +201,50 @@ struct CommonProperties {
     max_listeners: usize,
 }
 
+/// Initial builder state before a Zenoh configuration source has been selected.
 pub struct InitialBuilderState;
+
+/// Builder state that owns an in-memory Zenoh configuration.
 pub struct ConfigBuilderState {
     config: zenoh_config::Config,
 }
+
+/// Builder state that owns the path to a Zenoh configuration file.
 pub struct ConfigPathBuilderState {
     config_path: String,
 }
 
+/// Builder state that wraps an already-open Zenoh session.
 pub struct SessionBuilderState {
     zenoh_session: Session,
 }
 
+/// Marker trait for typestate builder states.
 pub trait BuilderState {}
 impl BuilderState for InitialBuilderState {}
 impl BuilderState for ConfigBuilderState {}
 impl BuilderState for ConfigPathBuilderState {}
 impl BuilderState for SessionBuilderState {}
 
+/// Typestate builder for [`UPTransportZenoh`].
+///
+/// Start with [`UPTransportZenoh::builder`], choose one configuration source,
+/// optionally set the maximum listener count, and then call `build` on the
+/// resulting state.
+///
+/// ```no_run
+/// # async fn build() -> Result<(), up_rust::UStatus> {
+/// use up_transport_zenoh::UPTransportZenoh;
+///
+/// let transport = UPTransportZenoh::builder("vehicle")?
+///     .with_config(Default::default())
+///     .with_max_listeners(256)
+///     .build()
+///     .await?;
+/// # let _ = transport;
+/// # Ok(())
+/// # }
+/// ```
 pub struct UPTransportZenohBuilder<S: BuilderState> {
     common: Box<CommonProperties>,
     extra: S,
@@ -324,7 +371,7 @@ impl UPTransportZenohBuilder<ConfigPathBuilderState> {
 }
 
 impl UPTransportZenohBuilder<SessionBuilderState> {
-    /// Creates the transport based on the provided configuration file.
+    /// Creates the transport around the provided Zenoh session.
     ///
     /// # Returns
     ///
