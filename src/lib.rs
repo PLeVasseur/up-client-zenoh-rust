@@ -23,9 +23,11 @@ payload as Zenoh payload bytes.
 When the `zero-copy` feature is enabled, `UPTransportZenoh` also implements
 `up_rust::zero_copy::UZeroCopyTransport`. The transmit path reserves Zenoh
 shared-memory payload buffers using Zenoh's `shared-memory` and `unstable`
-features. The receive path exposes Zenoh `ZBytes` through ordered readers and
-slice iterators and does not coalesce segmented payloads into an owned buffer
-unless callers explicitly cross an owned-frame adapter boundary.
+features. Frame metadata is fixed when the loan is reserved and mapped to the
+Zenoh key, priority, and attachment before callers write payload bytes. The
+receive path exposes Zenoh `ZBytes` through ordered readers and slice iterators
+and does not coalesce segmented payloads into an owned buffer unless callers
+explicitly cross an owned-frame adapter boundary.
 
 The transport is designed to run in the context of a [tokio `Runtime`] which
 needs to be configured outside of the transport according to the

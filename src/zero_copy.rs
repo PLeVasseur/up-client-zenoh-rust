@@ -53,6 +53,9 @@ use crate::{
 /// to reserve, serialize into, and send a loan in one step.
 pub struct ZenohTxBuffer {
     metadata: UFrameMetadata,
+    zenoh_key: String,
+    attachment: ZBytes,
+    priority: zenoh::qos::Priority,
     payload: ZenohTxPayload,
 }
 
@@ -87,10 +90,6 @@ impl ZenohTxPayload {
 impl UTxBuffer for ZenohTxBuffer {
     fn metadata(&self) -> &UFrameMetadata {
         &self.metadata
-    }
-
-    fn metadata_mut(&mut self) -> &mut UFrameMetadata {
-        &mut self.metadata
     }
 
     fn payload(&self) -> &[u8] {
@@ -200,8 +199,26 @@ impl UZeroCopyTransport for UPTransportZenoh {
             ));
         }
         validate_frame_metadata_for_payload(&metadata, metadata.encoding().is_some())?;
+        let zenoh_key = to_zenoh_key_string(
+            metadata.attributes().source(),
+            metadata.attributes().sink(),
+            self.local_authority.as_str(),
+        );
+        let attachment = frame_to_attachment(&metadata).map_err(|e| {
+            UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                format!("Unable to transform UFrameMetadata to attachment: {e}"),
+            )
+        })?;
+        let priority = map_zenoh_priority(metadata.attributes().priority());
         let payload = reserve_payload(self, payload_len, alignment)?;
-        Ok(ZenohTxBuffer { metadata, payload })
+        Ok(ZenohTxBuffer {
+            metadata,
+            zenoh_key,
+            attachment,
+            priority,
+            payload,
+        })
     }
 
     async fn send_zero_copy(&self, buffer: Self::Tx) -> Result<(), UStatus> {
@@ -209,18 +226,6 @@ impl UZeroCopyTransport for UPTransportZenoh {
             &buffer.metadata,
             buffer.metadata.encoding().is_some(),
         )?;
-        let zenoh_key = to_zenoh_key_string(
-            buffer.metadata.attributes().source(),
-            buffer.metadata.attributes().sink(),
-            self.local_authority.as_str(),
-        );
-        let attachment = frame_to_attachment(&buffer.metadata).map_err(|e| {
-            UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                format!("Unable to transform UFrameMetadata to attachment: {e}"),
-            )
-        })?;
-        let priority = map_zenoh_priority(buffer.metadata.attributes().priority());
         let payload = if buffer.metadata.encoding().is_some() {
             buffer.payload.into_zbytes()
         } else {
@@ -228,11 +233,11 @@ impl UZeroCopyTransport for UPTransportZenoh {
         };
 
         self.session
-            .put(&zenoh_key, payload)
-            .priority(priority)
-            .attachment(attachment)
+            .put(&buffer.zenoh_key, payload)
+            .priority(buffer.priority)
+            .attachment(buffer.attachment)
             .await
-            .inspect(|()| trace!("putting zero-copy frame with key: {zenoh_key}"))
+            .inspect(|()| trace!("putting zero-copy frame with key: {}", buffer.zenoh_key))
             .map_err(|e| {
                 UStatus::fail_with_code(UCode::INTERNAL, format!("failed to put Zenoh frame: {e}"))
             })?;
