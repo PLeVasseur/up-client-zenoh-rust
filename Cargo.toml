@@ -40,7 +40,7 @@ async-trait = "0.1"
 bytes = "1.10.1"
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
-up-rust = { path = "/home/pete.levasseur/eclipse/uprotocol/up-rust", default-features = false }
+up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "988895bc855398e81a27d1529e3775120d837e97", default-features = false }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
 zenoh = { version = "1.9.0" }
 
@@ -53,7 +53,7 @@ serial_test = { version = "3.4.0" }
 test-case = { version = "3.3" }
 tokio = { version = "1.45.1", default-features = false, features = ["rt-multi-thread", "signal"] }
 tracing-subscriber = "0.3.23"
-up-rust = { path = "/home/pete.levasseur/eclipse/uprotocol/up-rust", features = ["protobuf-wire"] }
+up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "988895bc855398e81a27d1529e3775120d837e97", features = ["protobuf-wire"] }
 
 [profile.release]
 opt-level = 3
