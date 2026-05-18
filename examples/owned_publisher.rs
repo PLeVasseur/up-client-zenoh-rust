@@ -14,7 +14,7 @@
 mod common;
 
 use up_rust::{
-    wire::RawBytes, LocalUriProvider, StaticUriProvider, UFrameMetadata, UOwnedTransportExt,
+    payload::RawBytes, LocalUriProvider, StaticUriProvider, UFrameMetadata, UOwnedTransportExt,
 };
 use up_transport_zenoh::UPTransportZenoh;
 

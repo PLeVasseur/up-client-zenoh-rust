@@ -20,8 +20,8 @@ use protobuf::well_known_types::wrappers::StringValue;
 use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
-    wire::{UDeserializer, USerializer, UWireError, WireFormat},
-    ProtobufWire, UAttributes, UEncoding, UFrameMetadata, UMessageType, UOwnedFrame,
+    payload::{PayloadFormat, UDeserializer, USerializer, UWireError},
+    ProtobufPayload, UAttributes, UEncoding, UFrameMetadata, UMessageType, UOwnedFrame,
     UOwnedListener, UOwnedTransport, UOwnedTransportExt, UPriority, UUri, UUID,
 };
 
@@ -33,7 +33,7 @@ struct TestReading {
 
 struct TestReadingWire;
 
-impl WireFormat for TestReadingWire {
+impl PayloadFormat for TestReadingWire {
     fn name() -> &'static str {
         "test-reading-v1"
     }
@@ -106,7 +106,7 @@ impl UOwnedListener for FrameSender {
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn owned_transport_round_trips_custom_wire_format() -> Result<(), Box<dyn std::error::Error>>
+async fn owned_transport_round_trips_custom_payload_codec() -> Result<(), Box<dyn std::error::Error>>
 {
     test_lib::before_test();
 
@@ -143,8 +143,8 @@ async fn owned_transport_round_trips_custom_wire_format() -> Result<(), Box<dyn 
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn owned_transport_round_trips_protobuf_wire_format() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn owned_transport_round_trips_protobuf_payload_codec(
+) -> Result<(), Box<dyn std::error::Error>> {
     test_lib::before_test();
 
     let topic = UUri::try_from_parts("ownedpbtest", 0x4210, 1, 0x9005)?;
@@ -159,16 +159,24 @@ async fn owned_transport_round_trips_protobuf_wire_format() -> Result<(), Box<dy
     payload.value = "protobuf over zenoh owned".to_string();
 
     transport
-        .send_serialized::<ProtobufWire, _>(UFrameMetadata::publish(topic), &payload)
+        .send_serialized::<ProtobufPayload, _>(UFrameMetadata::publish(topic), &payload)
         .await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await?
         .expect("receiver closed");
-    let decoded: StringValue = frame.deserialize::<ProtobufWire, _>()?;
+    let decoded: StringValue = frame.deserialize::<ProtobufPayload, _>()?;
+    let wrong_codec = frame.deserialize::<TestReadingWire, TestReading>();
 
-    assert_eq!(frame.metadata().encoding(), Some(&ProtobufWire::encoding()));
+    assert_eq!(
+        frame.metadata().encoding(),
+        Some(&ProtobufPayload::encoding())
+    );
     assert_eq!(decoded.value, payload.value);
+    assert!(matches!(
+        wrong_codec,
+        Err(UWireError::UnsupportedEncoding { .. })
+    ));
     Ok(())
 }
 

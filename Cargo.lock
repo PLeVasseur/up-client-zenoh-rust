@@ -3484,7 +3484,7 @@ dependencies = [
 [[package]]
 name = "up-rust"
 version = "0.10.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=988895bc855398e81a27d1529e3775120d837e97#988895bc855398e81a27d1529e3775120d837e97"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=922a0afcb02a368b05b2a70d92c62049dab52be6#922a0afcb02a368b05b2a70d92c62049dab52be6"
 dependencies = [
  "async-trait",
  "base64",

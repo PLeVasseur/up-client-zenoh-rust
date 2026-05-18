@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
-    wire::{RawBytes, WireFormat},
+    payload::RawBytes,
     zero_copy::{
         UTxBuffer, UZeroCopyListener, UZeroCopyPayloadCopyExt, UZeroCopyRxFrame,
         UZeroCopyTransport, UZeroCopyTransportExt,
