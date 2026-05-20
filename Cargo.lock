@@ -3483,8 +3483,8 @@ dependencies = [
 
 [[package]]
 name = "up-rust"
-version = "0.10.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=46afb8551077d65df66de29059629332a6fdd501#46afb8551077d65df66de29059629332a6fdd501"
+version = "0.11.0-SNAPSHOT"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=0b0201a8fa7a30c98c78c41221a4fac9eac954d8#0b0201a8fa7a30c98c78c41221a4fac9eac954d8"
 dependencies = [
  "async-trait",
  "base64",
@@ -3503,7 +3503,7 @@ dependencies = [
 
 [[package]]
 name = "up-transport-zenoh"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
