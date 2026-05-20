@@ -39,6 +39,7 @@ and does not spawn any threads itself.
 */
 
 #![warn(rustdoc::bare_urls, rustdoc::broken_intra_doc_links)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod listener_registry;
 pub(crate) mod utransport;
@@ -61,6 +62,7 @@ use zenoh::{Config, Session};
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
 #[cfg(feature = "zero-copy")]
+#[cfg_attr(docsrs, doc(cfg(feature = "zero-copy")))]
 pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;

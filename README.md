@@ -36,7 +36,49 @@ The example configuration file is located in the [config folder](config).
 
 Most developers will want to create an instance of the *UPTransportZenoh* struct and use it as a native owned-frame transport with the Communication Level API provided by the *up-rust* library.
 
-`UPTransportZenoh` implements `UOwnedTransport`. It preserves native `UFrameMetadata`, including `UAttributes` and `UEncoding`, in the Zenoh attachment while carrying the application payload as Zenoh payload bytes. `UEncoding.schema_ref` is preserved when present so typed decoders can enforce schema-aware compatibility after receive. Zenoh does not expose a true transmit-loan or receive-lease API in this binding, so this transport intentionally does not implement `UZeroCopyTransport`.
+`UPTransportZenoh` implements `UOwnedTransport` in all builds. It preserves native `UFrameMetadata`, including `UAttributes` and `UEncoding`, in the Zenoh attachment while carrying the application payload as Zenoh payload bytes. `UEncoding.schema_ref` is preserved when present so typed decoders can enforce schema-aware compatibility after receive.
+
+When the `zero-copy` feature is enabled, `UPTransportZenoh` also implements `up_rust::zero_copy::UZeroCopyTransport` using Zenoh shared-memory payload buffers on transmit and Zenoh `ZBytes` lease views on receive. Metadata is final at `reserve`: the binding maps it to the Zenoh key, priority, and attachment before the caller writes into `ZenohTxBuffer::payload_mut()`.
+
+| uProtocol frame part | Zenoh representation |
+| --- | --- |
+| `UAttributes.source` / `sink` | Zenoh key expression and attachment metadata |
+| `UAttributes.priority` | Zenoh priority |
+| `UAttributes` optional fields | Zenoh attachment metadata |
+| `UEncoding.format_id` / `content_type` / `schema_ref` | Zenoh attachment metadata |
+| Application payload bytes | Zenoh payload or SHM payload bytes |
+
+Owned send helpers serialize application values before handing the frame to Zenoh:
+
+```rust
+use up_rust::{payload::RawBytes, transport::UOwnedTransportExt, UFrameMetadata};
+
+async fn send<T>(transport: &T, metadata: UFrameMetadata) -> Result<(), up_rust::UStatus>
+where
+    T: up_rust::UOwnedTransport,
+{
+let payload: &[u8] = b"payload";
+transport
+    .send_serialized::<RawBytes, _>(metadata, &payload)
+    .await
+}
+```
+
+Zero-copy send helpers reserve Zenoh SHM first, then serialize directly into the loan:
+
+```rust
+use up_rust::{payload::RawBytes, zero_copy::UZeroCopyTransportExt, UFrameMetadata};
+
+async fn send<T>(transport: &T, metadata: UFrameMetadata) -> Result<(), up_rust::UStatus>
+where
+    T: up_rust::zero_copy::UZeroCopyTransport,
+{
+let payload: &[u8] = b"payload";
+transport
+    .send_serialized_zero_copy::<RawBytes, _>(metadata, &payload)
+    .await
+}
+```
 
 Both libraries need to be added as dependencies to your crate, e.g. using the following commands:
 
