@@ -17,8 +17,9 @@ use std::sync::Arc;
 use tracing::{error, trace};
 use up_rust::{
     transport::{verify_filter_criteria, ComparableOwnedListener},
-    validate_owned_frame_for_transport, UAttributes, UCode, UEncoding, UFrameMetadata,
-    UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport, UPriority, UStatus, UUri, UUID,
+    validate_owned_frame_for_transport, PayloadEncoding, UAttributes, UCode, UFrameMetadata,
+    UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UPriority, UStatus,
+    UUri, UUID,
 };
 use zenoh::{bytes::ZBytes, qos::Priority};
 
@@ -45,9 +46,7 @@ pub(crate) fn frame_to_attachment(header: &UFrameMetadata) -> anyhow::Result<ZBy
     )?;
     if let Some(encoding) = header.encoding() {
         bytes.push(1);
-        append_string(&mut bytes, encoding.format_id())?;
-        append_string(&mut bytes, encoding.content_type())?;
-        append_string(&mut bytes, encoding.schema_ref().unwrap_or_default())?;
+        write_encoding(&mut bytes, encoding)?;
     } else {
         bytes.push(0);
     }
@@ -96,17 +95,7 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
     };
     let encoding = match take_u8(&mut bytes)? {
         0 => None,
-        1 => {
-            let format_id = take_string(&mut bytes)?;
-            let content_type = take_string(&mut bytes)?;
-            let schema_ref = take_string(&mut bytes)?;
-            let schema_ref = if schema_ref.is_empty() {
-                None
-            } else {
-                Some(schema_ref)
-            };
-            Some(UEncoding::try_new(format_id, content_type, schema_ref)?)
-        }
+        1 => Some(take_encoding(&mut bytes)?),
         _ => {
             return Err(UStatus::fail_with_code(
                 UCode::INVALID_ARGUMENT,
@@ -148,6 +137,44 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
         .into());
     }
     Ok(UFrameMetadata::new(attributes, encoding))
+}
+
+fn write_encoding(bytes: &mut Vec<u8>, encoding: &PayloadEncoding) -> anyhow::Result<()> {
+    match encoding {
+        PayloadEncoding::Standard(format) => {
+            bytes.push(0);
+            bytes.push(format.value());
+        }
+        PayloadEncoding::Custom(custom) => {
+            bytes.push(1);
+            append_string(bytes, custom.id())?;
+            append_string(bytes, custom.content_type())?;
+        }
+    }
+    Ok(())
+}
+
+fn take_encoding(bytes: &mut &[u8]) -> anyhow::Result<PayloadEncoding> {
+    match take_u8(bytes)? {
+        0 => {
+            let value = take_u8(bytes)?;
+            let format = UPayloadFormat::from_u8(value).ok_or_else(|| {
+                UStatus::fail_with_code(
+                    UCode::INVALID_ARGUMENT,
+                    format!("invalid standard payload format {value}"),
+                )
+            })?;
+            Ok(PayloadEncoding::standard(format))
+        }
+        1 => Ok(PayloadEncoding::try_custom(
+            take_string(bytes)?,
+            take_string(bytes)?,
+        )?),
+        _ => Err(
+            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "invalid payload encoding kind")
+                .into(),
+        ),
+    }
 }
 
 fn write_u64(dst: &mut Vec<u8>, value: u64) {
@@ -458,11 +485,7 @@ mod tests {
             .with_comm_status(UCode::UNAVAILABLE);
         UFrameMetadata::new(
             attributes,
-            UEncoding::new(
-                "custom-json",
-                "application/custom+json",
-                Some("schema://example/type"),
-            ),
+            PayloadEncoding::custom("custom-json", "application/custom+json"),
         )
     }
 

@@ -21,7 +21,7 @@ use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
     payload::{PayloadFormat, UDeserializer, USerializer, UWireError},
-    ProtobufPayload, UAttributes, UEncoding, UFrameMetadata, UMessageType, UOwnedFrame,
+    PayloadEncoding, ProtobufPayload, UAttributes, UFrameMetadata, UMessageType, UOwnedFrame,
     UOwnedListener, UOwnedTransport, UOwnedTransportExt, UPriority, UUri, UUID,
 };
 
@@ -38,12 +38,8 @@ impl PayloadFormat for TestReadingWire {
         "test-reading-v1"
     }
 
-    fn encoding() -> UEncoding {
-        UEncoding::new(
-            Self::name(),
-            "application/x.up-test-reading",
-            Some("urn:uprotocol:test:reading:v1"),
-        )
+    fn encoding() -> PayloadEncoding {
+        PayloadEncoding::custom(Self::name(), "application/x.up-test-reading")
     }
 }
 
