@@ -11,24 +11,28 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::{mem::MaybeUninit, num::NonZeroUsize};
 
 use async_trait::async_trait;
 use tracing::{trace, warn};
 use up_rust::{
+    payload::{BorrowPayload, PayloadCodec, UWireError},
     transport::verify_filter_criteria,
     validate_frame_metadata_for_payload,
     zero_copy::UZeroCopyListener,
-    zero_copy::{UTxBuffer, UZeroCopyRxFrame, UZeroCopyTransport},
-    UCode, UFrameMetadata, UStatus, UUri,
+    zero_copy::{
+        LoanedPayload, LoanedPayloadUninitMut, PayloadLoanKind, ULoanedContiguousZeroCopyRxFrame,
+        UTxBuffer, UUninitTxBuffer, UZeroCopyRxFrame, UZeroCopyTransport,
+    },
+    UCode, UFrameMetadata, UStatus, UUri, UZeroCopyUninitTransport,
 };
 use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
     sample::Sample,
 };
 use zenoh::{
-    shm::{AllocAlignment, GarbageCollect, MemoryLayout, OwnedShmBuf, ZShmMut},
+    shm::{GarbageCollect, MemoryLayout, OwnedShmBuf, ZShmMut},
     Wait as _,
 };
 
@@ -59,6 +63,15 @@ pub struct ZenohTxBuffer {
     payload: ZenohTxPayload,
 }
 
+/// Zenoh shared-memory transmit loan with uninitialized application payload bytes.
+pub struct ZenohUninitTxBuffer {
+    metadata: UFrameMetadata,
+    zenoh_key: String,
+    attachment: ZBytes,
+    priority: zenoh::qos::Priority,
+    payload: ZenohTxPayload,
+}
+
 enum ZenohTxPayload {
     Empty,
     Shm(ZShmMut),
@@ -76,6 +89,21 @@ impl ZenohTxPayload {
         match self {
             Self::Empty => &mut [],
             Self::Shm(payload) => payload.as_mut(),
+        }
+    }
+
+    fn as_uninit_mut_slice(&mut self) -> &mut [MaybeUninit<u8>] {
+        match self {
+            Self::Empty => &mut [],
+            Self::Shm(payload) => {
+                let payload = payload.as_mut();
+                unsafe {
+                    std::slice::from_raw_parts_mut(
+                        payload.as_mut_ptr().cast::<MaybeUninit<u8>>(),
+                        payload.len(),
+                    )
+                }
+            }
         }
     }
 
@@ -98,6 +126,40 @@ impl UTxBuffer for ZenohTxBuffer {
 
     fn payload_mut(&mut self) -> &mut [u8] {
         self.payload.as_mut_slice()
+    }
+}
+
+impl UUninitTxBuffer for ZenohUninitTxBuffer {
+    type Initialized = ZenohTxBuffer;
+
+    fn metadata(&self) -> &UFrameMetadata {
+        &self.metadata
+    }
+
+    fn payload_len(&self) -> usize {
+        self.payload.as_slice().len()
+    }
+
+    fn payload_loan_kind(&self) -> PayloadLoanKind {
+        match self.payload {
+            ZenohTxPayload::Empty => PayloadLoanKind::TransportLoan,
+            ZenohTxPayload::Shm(_) => PayloadLoanKind::SharedMemory,
+        }
+    }
+
+    fn payload_uninit_mut(&mut self) -> LoanedPayloadUninitMut<'_> {
+        let kind = self.payload_loan_kind();
+        unsafe { LoanedPayloadUninitMut::new_unchecked(self.payload.as_uninit_mut_slice(), kind) }
+    }
+
+    unsafe fn assume_payload_init(self) -> Self::Initialized {
+        ZenohTxBuffer {
+            metadata: self.metadata,
+            zenoh_key: self.zenoh_key,
+            attachment: self.attachment,
+            priority: self.priority,
+            payload: self.payload,
+        }
     }
 }
 
@@ -133,6 +195,19 @@ impl ZenohRxFrame {
     #[must_use]
     pub fn sample(&self) -> &Sample {
         &self.sample
+    }
+
+    /// Borrows a typed payload only when the Zenoh payload is one SHM-backed region.
+    ///
+    /// This is stricter than [`UZeroCopyRxFrame::try_contiguous_payload`]: a
+    /// Vec-backed or segmented payload is rejected instead of being treated as a
+    /// zero-copy typed receive path.
+    pub fn borrow_shm_payload_as<C, T>(&self) -> Result<&T, UWireError>
+    where
+        C: PayloadCodec + BorrowPayload<T>,
+        T: ?Sized,
+    {
+        self.borrow_loaned_payload_as::<C, T>()
     }
 }
 
@@ -180,6 +255,17 @@ impl UZeroCopyRxFrame for ZenohRxFrame {
     }
 }
 
+impl ULoanedContiguousZeroCopyRxFrame for ZenohRxFrame {
+    fn loaned_contiguous_payload(&self) -> Result<LoanedPayload<'_>, UWireError> {
+        let shm = self
+            .sample
+            .payload()
+            .as_shm()
+            .ok_or(UWireError::NotLoanBacked)?;
+        Ok(unsafe { LoanedPayload::new_unchecked(shm.as_ref(), PayloadLoanKind::SharedMemory) })
+    }
+}
+
 #[async_trait]
 impl UZeroCopyTransport for UPTransportZenoh {
     type Tx = ZenohTxBuffer;
@@ -191,27 +277,8 @@ impl UZeroCopyTransport for UPTransportZenoh {
         payload_len: usize,
         alignment: usize,
     ) -> Result<Self::Tx, UStatus> {
-        validate_alignment(alignment)?;
-        if metadata.encoding().is_none() && payload_len != 0 {
-            return Err(UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                "message payload is present but payload encoding is absent",
-            ));
-        }
-        validate_frame_metadata_for_payload(&metadata, metadata.encoding().is_some())?;
-        let zenoh_key = to_zenoh_key_string(
-            metadata.attributes().source(),
-            metadata.attributes().sink(),
-            self.local_authority.as_str(),
-        );
-        let attachment = frame_to_attachment(&metadata).map_err(|e| {
-            UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                format!("Unable to transform UFrameMetadata to attachment: {e}"),
-            )
-        })?;
-        let priority = map_zenoh_priority(metadata.attributes().priority());
-        let payload = reserve_payload(self, payload_len, alignment)?;
+        let (zenoh_key, attachment, priority, payload) =
+            reserve_tx_parts(self, &metadata, payload_len, alignment)?;
         Ok(ZenohTxBuffer {
             metadata,
             zenoh_key,
@@ -292,6 +359,7 @@ impl UZeroCopyTransport for UPTransportZenoh {
             if !sink_matches(metadata.attributes().sink(), sink_filter) {
                 continue;
             }
+            ensure_strict_shm_payload(&metadata, &sample)?;
             return Ok(ZenohRxFrame::new(metadata, sample));
         }
     }
@@ -328,6 +396,28 @@ impl UZeroCopyTransport for UPTransportZenoh {
     }
 }
 
+#[async_trait]
+impl UZeroCopyUninitTransport for UPTransportZenoh {
+    type UninitTx = ZenohUninitTxBuffer;
+
+    async fn reserve_uninit(
+        &self,
+        metadata: UFrameMetadata,
+        payload_len: usize,
+        alignment: usize,
+    ) -> Result<Self::UninitTx, UStatus> {
+        let (zenoh_key, attachment, priority, payload) =
+            reserve_tx_parts(self, &metadata, payload_len, alignment)?;
+        Ok(ZenohUninitTxBuffer {
+            metadata,
+            zenoh_key,
+            attachment,
+            priority,
+            payload,
+        })
+    }
+}
+
 fn validate_alignment(alignment: usize) -> Result<(), UStatus> {
     if alignment == 0 || !alignment.is_power_of_two() {
         return Err(UStatus::fail_with_code(
@@ -342,6 +432,52 @@ fn sink_matches(actual: Option<&UUri>, filter: Option<&UUri>) -> bool {
     filter.is_none_or(|filter| actual.is_some_and(|actual| filter.matches(actual)))
 }
 
+pub(crate) fn is_strict_shm_payload(metadata: &UFrameMetadata, sample: &Sample) -> bool {
+    metadata.encoding().is_none()
+        || sample.payload().is_empty()
+        || sample.payload().as_shm().is_some()
+}
+
+fn ensure_strict_shm_payload(metadata: &UFrameMetadata, sample: &Sample) -> Result<(), UStatus> {
+    if is_strict_shm_payload(metadata, sample) {
+        return Ok(());
+    }
+    Err(UStatus::fail_with_code(
+        UCode::FAILED_PRECONDITION,
+        "zero-copy Zenoh receive requires SHM-backed payload bytes",
+    ))
+}
+
+fn reserve_tx_parts(
+    transport: &UPTransportZenoh,
+    metadata: &UFrameMetadata,
+    payload_len: usize,
+    alignment: usize,
+) -> Result<(String, ZBytes, zenoh::qos::Priority, ZenohTxPayload), UStatus> {
+    validate_alignment(alignment)?;
+    if metadata.encoding().is_none() && payload_len != 0 {
+        return Err(UStatus::fail_with_code(
+            UCode::INVALID_ARGUMENT,
+            "message payload is present but payload encoding is absent",
+        ));
+    }
+    validate_frame_metadata_for_payload(metadata, metadata.encoding().is_some())?;
+    let zenoh_key = to_zenoh_key_string(
+        metadata.attributes().source(),
+        metadata.attributes().sink(),
+        transport.local_authority.as_str(),
+    );
+    let attachment = frame_to_attachment(metadata).map_err(|e| {
+        UStatus::fail_with_code(
+            UCode::INVALID_ARGUMENT,
+            format!("Unable to transform UFrameMetadata to attachment: {e}"),
+        )
+    })?;
+    let priority = map_zenoh_priority(metadata.attributes().priority());
+    let payload = reserve_payload(transport, payload_len, alignment)?;
+    Ok((zenoh_key, attachment, priority, payload))
+}
+
 fn reserve_payload(
     transport: &UPTransportZenoh,
     payload_len: usize,
@@ -352,9 +488,8 @@ fn reserve_payload(
     }
 
     let provider = transport.shm_provider()?;
-    let alloc_alignment = allocation_alignment(alignment)?;
     let aligned_len = align_len(payload_len, alignment)?;
-    let layout = MemoryLayout::new(aligned_len, alloc_alignment).map_err(|err| {
+    let layout = MemoryLayout::try_from(aligned_len).map_err(|err| {
         UStatus::fail_with_code(
             UCode::INVALID_ARGUMENT,
             format!("invalid Zenoh SHM allocation layout: {err}"),
@@ -384,19 +519,17 @@ fn reserve_payload(
         })?;
     }
 
-    Ok(ZenohTxPayload::Shm(payload))
-}
+    let address = payload.as_ref().as_ptr() as usize;
+    if address % alignment != 0 {
+        return Err(UStatus::fail_with_code(
+            UCode::INTERNAL,
+            format!(
+                "Zenoh SHM payload address 0x{address:x} does not satisfy requested alignment {alignment}"
+            ),
+        ));
+    }
 
-fn allocation_alignment(alignment: usize) -> Result<AllocAlignment, UStatus> {
-    let pow = u8::try_from(alignment.trailing_zeros()).map_err(|_| {
-        UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "payload alignment is too large")
-    })?;
-    AllocAlignment::new(pow).map_err(|err| {
-        UStatus::fail_with_code(
-            UCode::INVALID_ARGUMENT,
-            format!("invalid Zenoh SHM payload alignment: {err}"),
-        )
-    })
+    Ok(ZenohTxPayload::Shm(payload))
 }
 
 fn align_len(payload_len: usize, alignment: usize) -> Result<usize, UStatus> {

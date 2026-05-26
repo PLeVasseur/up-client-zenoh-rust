@@ -21,14 +21,34 @@ use async_trait::async_trait;
 use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
-    payload::RawBytes,
+    payload::{PlacementDefault, RawBytes, StableContainerPayload},
+    test_util::zero_copy_conformance,
     zero_copy::{
-        UTxBuffer, UZeroCopyListener, UZeroCopyPayloadCopyExt, UZeroCopyRxFrame,
-        UZeroCopyTransport, UZeroCopyTransportExt,
+        PayloadLoanKind, ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UZeroCopyListener,
+        UZeroCopyPayloadCopyExt, UZeroCopyRxFrame, UZeroCopyTransport, UZeroCopyTransportExt,
     },
-    UAttributes, UFrameMetadata, UMessageType, UOwnedFrame, UUri, UUID,
+    UAttributes, UCode, UFrameMetadata, UMessageType, UOwnedFrame, UOwnedTransport, UUri,
+    UZeroCopyUninitTransportExt, UUID,
 };
 use up_transport_zenoh::ZenohRxFrame;
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    PlacementDefault,
+    up_rust::StablePayload,
+    up_rust::ByteBackedStablePayload,
+)]
+#[stable_payload(type_name = "example.vehicle.VehiclePose")]
+struct VehiclePose {
+    x: u64,
+    y: u64,
+}
 
 struct ZeroCopyFrameSender(mpsc::UnboundedSender<UOwnedFrame>);
 
@@ -44,8 +64,67 @@ impl UZeroCopyListener<ZenohRxFrame> for ZeroCopyFrameSender {
     }
 }
 
+struct StablePoseSender(mpsc::UnboundedSender<VehiclePose>);
+
+#[async_trait]
+impl UZeroCopyListener<ZenohRxFrame> for StablePoseSender {
+    async fn on_receive_zero_copy(&self, frame: ZenohRxFrame) {
+        zero_copy_conformance::verify_loaned_rx_payload_layout_for(
+            &frame,
+            std::mem::size_of::<VehiclePose>(),
+            std::mem::align_of::<VehiclePose>(),
+        )
+        .expect("stable-container payload should satisfy loaned layout");
+        assert_eq!(
+            frame
+                .payload_loan_kind()
+                .expect("stable-container payload should report loan kind"),
+            PayloadLoanKind::SharedMemory
+        );
+        let pose = zero_copy_conformance::borrow_loaned_payload_as::<
+            StableContainerPayload<VehiclePose>,
+            VehiclePose,
+        >(&frame)
+        .expect("stable-container payload should be SHM-backed and typed");
+        self.0
+            .send(*pose)
+            .expect("stable pose receive channel should be open");
+    }
+}
+
 fn topic(authority: &str, resource: u16) -> UUri {
     UUri::try_from_parts(authority, 0x4210, 1, resource).expect("valid topic")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_stable_container_rejects_wrong_metadata_from_shm(
+) -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-wrong-stable-metadata-{}", std::process::id());
+    let transport = Arc::new(test_lib::create_up_transport_zenoh(&authority, None).await?);
+    let source = topic(&authority, 0x9305);
+    let receiver = transport.clone();
+    let receive_source = source.clone();
+    let receive_task =
+        tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let payload = [0_u8; std::mem::size_of::<VehiclePose>()];
+    transport
+        .send_serialized_zero_copy::<RawBytes, _>(
+            UFrameMetadata::publish(source),
+            &payload.as_slice(),
+        )
+        .await?;
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), receive_task).await???;
+    assert_eq!(frame.payload_loan_kind()?, PayloadLoanKind::SharedMemory);
+    assert!(frame
+        .borrow_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>()
+        .is_err());
+    Ok(())
 }
 
 fn authority_wildcard_source(authority: &str) -> UUri {
@@ -81,6 +160,65 @@ async fn zero_copy_reserve_allocates_shm_payload() -> Result<(), Box<dyn std::er
 
     loan.payload_mut().copy_from_slice(b"shm-test");
     assert_eq!(loan.payload(), b"shm-test");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_stable_container_payload_borrows_from_shm(
+) -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-stable-{}", std::process::id());
+    let transport = test_lib::create_up_transport_zenoh(&authority, None).await?;
+    let source = topic(&authority, 0x9303);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    transport
+        .register_zero_copy_listener(&source, None, Arc::new(StablePoseSender(tx)))
+        .await?;
+
+    transport
+        .send_uninit_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
+            UFrameMetadata::publish(source),
+            |slot| Ok(slot.write(VehiclePose { x: 11, y: 22 })),
+        )
+        .await?;
+
+    let pose = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await?
+        .expect("stable-container listener result channel should remain open");
+
+    assert_eq!(pose, VehiclePose { x: 11, y: 22 });
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_stable_container_rejects_owned_payload_as_loaned_rx(
+) -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-owned-stable-{}", std::process::id());
+    let transport = Arc::new(test_lib::create_up_transport_zenoh(&authority, None).await?);
+    let source = topic(&authority, 0x9304);
+    let receiver = transport.clone();
+    let receive_source = source.clone();
+    let receive_task =
+        tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let frame = UOwnedFrame::from_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
+        UFrameMetadata::publish(source),
+        &VehiclePose { x: 11, y: 22 },
+    )?;
+    transport.send_owned(frame).await?;
+
+    let result = tokio::time::timeout(Duration::from_secs(5), receive_task).await??;
+    let Err(error) = result else {
+        panic!("strict zero-copy receive should reject non-SHM payloads");
+    };
+    assert_eq!(error.get_code(), UCode::FAILED_PRECONDITION);
     Ok(())
 }
 

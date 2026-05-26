@@ -35,7 +35,7 @@ use up_rust::{validate_frame_metadata_for_payload, zero_copy::UZeroCopyListener}
 use zenoh::{pubsub::Subscriber, sample::Sample, Session};
 
 #[cfg(feature = "zero-copy")]
-use crate::zero_copy::ZenohRxFrame;
+use crate::zero_copy::{is_strict_shm_payload, ZenohRxFrame};
 
 type OwnedSubscriberMap = Mutex<HashMap<(String, ComparableOwnedListener), RegisteredSubscriber>>;
 #[cfg(feature = "zero-copy")]
@@ -206,6 +206,13 @@ impl ListenerRegistry {
             if !has_payload && !sample.payload().is_empty() {
                 warn!(
                     "Ignoring Zenoh Sample with payload bytes but no payload encoding [key expr: {}]",
+                    sample.key_expr()
+                );
+                return;
+            }
+            if !is_strict_shm_payload(&metadata, &sample) {
+                warn!(
+                    "Dropping non-SHM Zenoh payload on strict zero-copy listener path [key expr: {}]",
                     sample.key_expr()
                 );
                 return;

@@ -27,6 +27,10 @@ Assume you're using debug build.[^1]
 ./target/debug/examples/owned_publisher
 # Owned-frame subscriber
 ./target/debug/examples/owned_subscriber
+# Stable typed Zenoh SHM publisher, requires --features zero-copy
+./target/debug/examples/zero_copy_stable_publisher
+# Stable typed Zenoh SHM subscriber, requires --features zero-copy
+./target/debug/examples/zero_copy_stable_subscriber
 ```
 
 For the advanced Zenoh configuration, you can either use `-h` to see more details or pass the configuration file with `-c`.
@@ -79,6 +83,38 @@ transport
     .await
 }
 ```
+
+Stable typed payloads can be constructed directly in Zenoh SHM without first
+materializing or default-initializing an application payload buffer:
+
+```rust
+use up_rust::{payload::StableContainerPayload, UFrameMetadata, UZeroCopyUninitTransportExt};
+
+#[repr(C)]
+#[derive(Clone, Copy, up_rust::StablePayload)]
+#[stable_payload(type_name = "example.vehicle.VehiclePose")]
+struct VehiclePose {
+    x: u64,
+    y: u64,
+}
+
+async fn send<T>(transport: &T, metadata: UFrameMetadata) -> Result<(), up_rust::UStatus>
+where
+    T: up_rust::UZeroCopyUninitTransport,
+{
+    transport
+        .send_uninit_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
+            metadata,
+            |slot| Ok(slot.write(VehiclePose { x: 1, y: 2 })),
+        )
+        .await
+}
+```
+
+On the zero-copy receive path, Zenoh payload bytes must be SHM-backed to qualify
+as loan-backed stable payloads. Pull receive returns `FAILED_PRECONDITION` for
+non-SHM payload bytes, while listeners drop non-SHM payloads with a warning.
+Use the owned transport APIs for interoperable regular Zenoh payload bytes.
 
 Both libraries need to be added as dependencies to your crate, e.g. using the following commands:
 
