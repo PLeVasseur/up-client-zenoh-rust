@@ -52,7 +52,7 @@ async-trait = "0.1"
 bytes = "1.10.1"
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
-up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "6db506f0deff5de4f1093d1378d7dd40d3bb9f5d", default-features = false }
+up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "425c4c578896533c1717e79e11463d8cb683ef8f", default-features = false }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
 zenoh = { version = "1.9.0" }
 
@@ -65,7 +65,7 @@ serial_test = { version = "3.4.0" }
 test-case = { version = "3.3" }
 tokio = { version = "1.45.1", default-features = false, features = ["rt-multi-thread", "signal"] }
 tracing-subscriber = "0.3.23"
-up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "6db506f0deff5de4f1093d1378d7dd40d3bb9f5d", features = ["protobuf-wire", "test-util"] }
+up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "425c4c578896533c1717e79e11463d8cb683ef8f", features = ["protobuf-wire", "test-util"] }
 
 [profile.release]
 opt-level = 3
