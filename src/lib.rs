@@ -103,6 +103,8 @@ pub struct UPTransportZenoh {
     subscribers: ListenerRegistry,
     local_authority: String,
     #[cfg(feature = "zero-copy")]
+    shm_segment_size: usize,
+    #[cfg(feature = "zero-copy")]
     shm_provider: OnceLock<ZenohShmProviderInit>,
 }
 
@@ -139,6 +141,8 @@ impl UPTransportZenoh {
             common: Box::new(CommonProperties {
                 local_authority: authority_name,
                 max_listeners: DEFAULT_MAX_LISTENERS,
+                #[cfg(feature = "zero-copy")]
+                shm_segment_size: DEFAULT_SHM_SEGMENT_SIZE,
             }),
             extra: InitialBuilderState,
         })
@@ -146,31 +150,24 @@ impl UPTransportZenoh {
 
     async fn init_with_config(
         config: Config,
-        local_authority: String,
-        max_listeners: usize,
+        common: CommonProperties,
     ) -> Result<UPTransportZenoh, UStatus> {
         let session = zenoh::open(config).await.map_err(|err| {
             let msg = "Failed to open Zenoh session";
             error!("{msg}: {err}");
             UStatus::fail_with_code(UCode::INTERNAL, msg)
         })?;
-        Ok(Self::init_with_session(
-            session,
-            local_authority,
-            max_listeners,
-        ))
+        Ok(Self::init_with_session(session, common))
     }
 
-    fn init_with_session(
-        session: Session,
-        local_authority: String,
-        max_listeners: usize,
-    ) -> UPTransportZenoh {
+    fn init_with_session(session: Session, common: CommonProperties) -> UPTransportZenoh {
         let session_to_use = Arc::new(session);
         UPTransportZenoh {
             session: session_to_use.clone(),
-            subscribers: ListenerRegistry::new(session_to_use, max_listeners),
-            local_authority,
+            subscribers: ListenerRegistry::new(session_to_use, common.max_listeners),
+            local_authority: common.local_authority,
+            #[cfg(feature = "zero-copy")]
+            shm_segment_size: common.shm_segment_size,
             #[cfg(feature = "zero-copy")]
             shm_provider: OnceLock::new(),
         }
@@ -180,7 +177,7 @@ impl UPTransportZenoh {
     pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
         self.shm_provider
             .get_or_init(|| {
-                ShmProviderBuilder::default_backend(DEFAULT_SHM_SEGMENT_SIZE)
+                ShmProviderBuilder::default_backend(self.shm_segment_size)
                     .wait()
                     .map(Arc::new)
                     .map_err(|err| err.to_string())
@@ -203,6 +200,8 @@ impl UPTransportZenoh {
 struct CommonProperties {
     local_authority: String,
     max_listeners: usize,
+    #[cfg(feature = "zero-copy")]
+    shm_segment_size: usize,
 }
 
 /// Initial builder state before a Zenoh configuration source has been selected.
@@ -324,12 +323,7 @@ impl UPTransportZenohBuilder<ConfigBuilderState> {
     /// # }
     /// ```
     pub async fn build(self) -> Result<UPTransportZenoh, UStatus> {
-        UPTransportZenoh::init_with_config(
-            self.extra.config,
-            self.common.local_authority,
-            self.common.max_listeners,
-        )
-        .await
+        UPTransportZenoh::init_with_config(self.extra.config, *self.common).await
     }
 }
 
@@ -365,12 +359,7 @@ impl UPTransportZenohBuilder<ConfigPathBuilderState> {
             error!("Failed to load Zenoh config from file: {e}");
             UStatus::fail_with_code(UCode::INVALID_ARGUMENT, e.to_string())
         })?;
-        UPTransportZenoh::init_with_config(
-            config,
-            self.common.local_authority,
-            self.common.max_listeners,
-        )
-        .await
+        UPTransportZenoh::init_with_config(config, *self.common).await
     }
 }
 
@@ -405,8 +394,7 @@ impl UPTransportZenohBuilder<SessionBuilderState> {
     pub fn build(self) -> Result<UPTransportZenoh, UStatus> {
         Ok(UPTransportZenoh::init_with_session(
             self.extra.zenoh_session,
-            self.common.local_authority,
-            self.common.max_listeners,
+            *self.common,
         ))
     }
 }
@@ -417,6 +405,18 @@ impl<S: BuilderState> UPTransportZenohBuilder<S> {
     #[must_use]
     pub fn with_max_listeners(mut self, max_listeners: usize) -> Self {
         self.common.max_listeners = max_listeners;
+        self
+    }
+
+    /// Sets the Zenoh shared-memory provider segment size in bytes.
+    ///
+    /// The value is used lazily when the first zero-copy transmit loan is
+    /// reserved. If not set explicitly, the default is 64 MiB.
+    #[cfg(feature = "zero-copy")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "zero-copy")))]
+    #[must_use]
+    pub fn with_shm_segment_size(mut self, shm_segment_size: usize) -> Self {
+        self.common.shm_segment_size = shm_segment_size;
         self
     }
 }
@@ -441,5 +441,16 @@ mod tests {
         } else {
             false
         }
+    }
+
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn builder_sets_shm_segment_size() {
+        let builder = UPTransportZenoh::builder("local_authority")
+            .expect("valid authority")
+            .with_config(zenoh_config::Config::default())
+            .with_shm_segment_size(1024 * 1024);
+
+        assert_eq!(builder.common.shm_segment_size, 1024 * 1024);
     }
 }
