@@ -553,7 +553,7 @@ fn reserve_payload(
     }
 
     let address = payload.as_ref().as_ptr() as usize;
-    if address % alignment != 0 {
+    if !address.is_multiple_of(alignment) {
         return Err(UStatus::fail_with_code(
             UCode::INTERNAL,
             format!(

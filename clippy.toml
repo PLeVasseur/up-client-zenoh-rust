@@ -1,0 +1,2 @@
+# Clippy behavior configuration. Lint levels are enforced in Cargo.toml.
+msrv = "1.88"
