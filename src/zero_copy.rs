@@ -173,6 +173,14 @@ impl UUninitTxBuffer for ZenohUninitTxBuffer {
     }
 
     unsafe fn assume_payload_init(self) -> Self::Initialized {
+        // SAFETY CONTRACT:
+        // - The caller of `UUninitTxBuffer::assume_payload_init` guarantees the
+        //   visible application payload range returned by `payload_uninit_mut`
+        //   was fully initialized before conversion.
+        // - This conversion does not reinterpret pointers or allocate; it only
+        //   moves the same Zenoh payload storage into the initialized type-state.
+        // - External contract: if the storage is SHM-backed, Zenoh continues to
+        //   own a valid payload allocation for the resulting transmit buffer.
         ZenohTxBuffer {
             metadata: self.metadata,
             zenoh_key: self.zenoh_key,
