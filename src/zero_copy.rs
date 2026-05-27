@@ -97,6 +97,18 @@ impl ZenohTxPayload {
             Self::Empty => &mut [],
             Self::Shm(payload) => {
                 let payload = payload.as_mut();
+                // SAFETY:
+                // - `payload` is one mutable Zenoh SHM payload slice and is
+                //   exclusively borrowed through `&mut self`.
+                // - Per https://doc.rust-lang.org/stable/std/mem/union.MaybeUninit.html#layout-1:
+                //
+                //   "`MaybeUninit<T>` is guaranteed to have the same size,
+                //   alignment, and ABI as `T`."
+                //
+                // - Per https://doc.rust-lang.org/stable/std/slice/fn.from_raw_parts_mut.html#safety,
+                //   `data` must be "valid for both reads and writes" and "must
+                //   not be accessed through any other pointer" for the returned
+                //   lifetime; those properties come from the original `&mut [u8]`.
                 unsafe {
                     std::slice::from_raw_parts_mut(
                         payload.as_mut_ptr().cast::<MaybeUninit<u8>>(),
@@ -149,6 +161,14 @@ impl UUninitTxBuffer for ZenohUninitTxBuffer {
 
     fn payload_uninit_mut(&mut self) -> LoanedPayloadUninitMut<'_> {
         let kind = self.payload_loan_kind();
+        // SAFETY:
+        // - `as_uninit_mut_slice` returns the exact visible payload range for
+        //   this Zenoh transmit loan.
+        // - `kind` is derived from the same payload storage, preserving whether
+        //   the range is ordinary transport storage or SHM-backed.
+        // - `&mut self` provides exclusive access for the returned loan view.
+        // - The external Zenoh contract supplies the SHM/runtime provenance;
+        //   Rust only sees the exact borrowed slice and lifetime here.
         unsafe { LoanedPayloadUninitMut::new_unchecked(self.payload.as_uninit_mut_slice(), kind) }
     }
 
@@ -202,6 +222,11 @@ impl ZenohRxFrame {
     /// This is stricter than [`UZeroCopyRxFrame::try_contiguous_payload`]: a
     /// Vec-backed or segmented payload is rejected instead of being treated as a
     /// zero-copy typed receive path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Zenoh payload is not SHM-backed or when the
+    /// selected payload codec rejects the borrowed payload bytes.
     pub fn borrow_shm_payload_as<C, T>(&self) -> Result<&T, UWireError>
     where
         C: PayloadCodec + BorrowPayload<T>,
@@ -262,6 +287,14 @@ impl ULoanedContiguousZeroCopyRxFrame for ZenohRxFrame {
             .payload()
             .as_shm()
             .ok_or(UWireError::NotLoanBacked)?;
+        // SAFETY:
+        // - `as_shm()` succeeded, so Zenoh reports that the payload bytes are
+        //   backed by shared-memory storage rather than a coalesced owned copy.
+        // - The returned slice is borrowed from `self.sample` and cannot outlive
+        //   the receive lease.
+        // - Per https://doc.rust-lang.org/stable/std/slice/fn.from_raw_parts.html#safety,
+        //   a borrowed slice must be valid for reads and contained within one
+        //   allocation; Zenoh's `ZShm` lease supplies that external provenance.
         Ok(unsafe { LoanedPayload::new_unchecked(shm.as_ref(), PayloadLoanKind::SharedMemory) })
     }
 }
