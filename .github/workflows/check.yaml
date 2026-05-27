@@ -82,7 +82,7 @@ jobs:
       - name: cargo clippy
         run: |
           cargo clippy --version
-          cargo clippy --all-targets --all-features --no-deps -- -W warnings -D warnings
+          cargo clippy --all-targets --all-features --no-deps -- -D warnings
 
   build-docs:
     runs-on: ubuntu-latest
