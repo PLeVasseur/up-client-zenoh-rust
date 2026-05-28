@@ -24,11 +24,11 @@ use up_rust::{
     payload::{PlacementDefault, RawBytes, StableContainerPayload},
     test_util::zero_copy_conformance,
     zero_copy::{
-        PayloadLoanKind, ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UZeroCopyListener,
+        PayloadLoanProvenance, ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UZeroCopyListener,
         UZeroCopyPayloadCopyExt, UZeroCopyRxFrame, UZeroCopyTransport, UZeroCopyTransportExt,
     },
-    UAttributes, UCode, UFrameMetadata, UMessageType, UOwnedFrame, UOwnedTransport, UUri,
-    UZeroCopyUninitTransportExt, UUID,
+    PayloadLayout, UAttributes, UCode, UFrameMetadata, UMessageType, UOwnedFrame, UOwnedTransport,
+    UTxLoanSpec, UUri, UZeroCopyUninitTransportExt, UUID,
 };
 use up_transport_zenoh::ZenohRxFrame;
 
@@ -58,7 +58,9 @@ impl UZeroCopyListener<ZenohRxFrame> for ZeroCopyFrameSender {
         self.0
             .send(UOwnedFrame::new(
                 frame.metadata().clone(),
-                frame.payload_to_vec(),
+                frame
+                    .try_payload_to_vec()
+                    .expect("zero-copy payload slices should match payload_len"),
             ))
             .expect("zero-copy receive channel should be open");
     }
@@ -81,15 +83,13 @@ impl UZeroCopyListener<ZenohRxFrame> for StablePoseSender {
         .expect("stable-container payload should satisfy loaned layout");
         assert_eq!(
             frame
-                .payload_loan_kind()
-                .expect("stable-container payload should report loan kind"),
-            PayloadLoanKind::SharedMemory
+                .payload_loan_provenance()
+                .expect("stable-container payload should report loan provenance"),
+            PayloadLoanProvenance::SharedMemory
         );
-        let pose = zero_copy_conformance::borrow_loaned_payload_as::<
-            StableContainerPayload<VehiclePose>,
-            VehiclePose,
-        >(&frame)
-        .expect("stable-container payload should be SHM-backed and typed");
+        let pose = frame
+            .borrow_stable_payload::<VehiclePose>()
+            .expect("stable-container payload should be SHM-backed and typed");
         self.0
             .send(*pose)
             .expect("stable pose receive channel should be open");
@@ -124,10 +124,11 @@ async fn zero_copy_stable_container_rejects_wrong_metadata_from_shm(
         .await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), receive_task).await???;
-    assert_eq!(frame.payload_loan_kind()?, PayloadLoanKind::SharedMemory);
-    assert!(frame
-        .borrow_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>()
-        .is_err());
+    assert_eq!(
+        frame.payload_loan_provenance()?,
+        PayloadLoanProvenance::SharedMemory
+    );
+    assert!(frame.borrow_stable_payload::<VehiclePose>().is_err());
     Ok(())
 }
 
@@ -148,18 +149,17 @@ async fn recv_frame(rx: &mut mpsc::UnboundedReceiver<UOwnedFrame>) -> UOwnedFram
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn zero_copy_reserve_allocates_shm_payload() -> Result<(), Box<dyn std::error::Error>> {
+async fn zero_copy_loan_tx_allocates_shm_payload() -> Result<(), Box<dyn std::error::Error>> {
     test_lib::before_test();
 
     let authority = format!("zenoh-zc-align-{}", std::process::id());
     let transport = test_lib::create_up_transport_zenoh(&authority, None).await?;
     let source = topic(&authority, 0x9300);
     let mut loan = transport
-        .reserve(
+        .loan_tx(UTxLoanSpec::payload(
             UFrameMetadata::publish(source).with_encoding(RawBytes::encoding()),
-            8,
-            1,
-        )
+            PayloadLayout::new(8, 1)?,
+        )?)
         .await?;
 
     loan.payload_mut().copy_from_slice(b"shm-test");
@@ -169,17 +169,14 @@ async fn zero_copy_reserve_allocates_shm_payload() -> Result<(), Box<dyn std::er
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn zero_copy_reserve_rejects_payload_without_encoding(
+async fn zero_copy_loan_spec_rejects_payload_without_encoding(
 ) -> Result<(), Box<dyn std::error::Error>> {
     test_lib::before_test();
 
     let authority = format!("zenoh-zc-missing-encoding-{}", std::process::id());
-    let transport = test_lib::create_up_transport_zenoh(&authority, None).await?;
     let source = topic(&authority, 0x9306);
 
-    let result = transport
-        .reserve(UFrameMetadata::publish(source), 1, 1)
-        .await;
+    let result = UTxLoanSpec::payload(UFrameMetadata::publish(source), PayloadLayout::new(1, 1)?);
 
     match result {
         Ok(_) => panic!("payload bytes without encoding must be rejected"),
@@ -203,11 +200,9 @@ async fn zero_copy_preserves_present_empty_payload() -> Result<(), Box<dyn std::
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let loan = transport
-        .reserve(
+        .loan_tx(UTxLoanSpec::present_empty_payload(
             UFrameMetadata::publish(source).with_encoding(RawBytes::encoding()),
-            0,
-            1,
-        )
+        )?)
         .await?;
     transport.send_zero_copy(loan).await?;
 
@@ -233,7 +228,7 @@ async fn zero_copy_preserves_no_payload() -> Result<(), Box<dyn std::error::Erro
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let loan = transport
-        .reserve(UFrameMetadata::publish(source), 0, 1)
+        .loan_tx(UTxLoanSpec::no_payload(UFrameMetadata::publish(source))?)
         .await?;
     transport.send_zero_copy(loan).await?;
 

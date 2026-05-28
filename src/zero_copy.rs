@@ -17,15 +17,16 @@ use std::{mem::MaybeUninit, num::NonZeroUsize};
 use async_trait::async_trait;
 use tracing::{trace, warn};
 use up_rust::{
-    payload::{BorrowPayload, PayloadCodec, UWireError},
+    payload::UWireError,
     transport::verify_filter_criteria,
     validate_frame_metadata_for_payload,
     zero_copy::UZeroCopyListener,
     zero_copy::{
-        LoanedPayload, LoanedPayloadUninitMut, PayloadLoanKind, ULoanedContiguousZeroCopyRxFrame,
-        UTxBuffer, UUninitTxBuffer, UZeroCopyRxFrame, UZeroCopyTransport,
+        LoanedPayload, LoanedPayloadUninitMut, PayloadLoanProvenance,
+        ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UUninitTxBuffer, UZeroCopyRxFrame,
+        UZeroCopyTransport,
     },
-    UCode, UFrameMetadata, UStatus, UUri, UZeroCopyUninitTransport,
+    UCode, UFrameMetadata, UStatus, UTxLoanSpec, UUri, UZeroCopyUninitTransport,
 };
 use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
@@ -47,7 +48,7 @@ use crate::{
 /// Zenoh shared-memory transmit loan used by the `zero-copy` feature.
 ///
 /// Values of this type are returned from
-/// [`UZeroCopyTransport::reserve`](up_rust::zero_copy::UZeroCopyTransport::reserve)
+/// [`UZeroCopyTransport::loan_tx`](up_rust::zero_copy::UZeroCopyTransport::loan_tx)
 /// for [`UPTransportZenoh`]. The payload storage is backed by Zenoh SHM when the
 /// frame has a payload. Frames without payload use an empty buffer and no SHM
 /// allocation.
@@ -139,6 +140,13 @@ impl UTxBuffer for ZenohTxBuffer {
     fn payload_mut(&mut self) -> &mut [u8] {
         self.payload.as_mut_slice()
     }
+
+    fn payload_loan_provenance(&self) -> PayloadLoanProvenance {
+        match self.payload {
+            ZenohTxPayload::Empty => PayloadLoanProvenance::OpaqueTransportLoan,
+            ZenohTxPayload::Shm(_) => PayloadLoanProvenance::SharedMemory,
+        }
+    }
 }
 
 impl UUninitTxBuffer for ZenohUninitTxBuffer {
@@ -152,24 +160,26 @@ impl UUninitTxBuffer for ZenohUninitTxBuffer {
         self.payload.as_slice().len()
     }
 
-    fn payload_loan_kind(&self) -> PayloadLoanKind {
+    fn payload_loan_provenance(&self) -> PayloadLoanProvenance {
         match self.payload {
-            ZenohTxPayload::Empty => PayloadLoanKind::TransportLoan,
-            ZenohTxPayload::Shm(_) => PayloadLoanKind::SharedMemory,
+            ZenohTxPayload::Empty => PayloadLoanProvenance::OpaqueTransportLoan,
+            ZenohTxPayload::Shm(_) => PayloadLoanProvenance::SharedMemory,
         }
     }
 
     fn payload_uninit_mut(&mut self) -> LoanedPayloadUninitMut<'_> {
-        let kind = self.payload_loan_kind();
+        let provenance = self.payload_loan_provenance();
         // SAFETY:
         // - `as_uninit_mut_slice` returns the exact visible payload range for
         //   this Zenoh transmit loan.
-        // - `kind` is derived from the same payload storage, preserving whether
-        //   the range is ordinary transport storage or SHM-backed.
+        // - `provenance` is derived from the same payload storage, preserving
+        //   whether the range is ordinary transport storage or SHM-backed.
         // - `&mut self` provides exclusive access for the returned loan view.
         // - The external Zenoh contract supplies the SHM/runtime provenance;
         //   Rust only sees the exact borrowed slice and lifetime here.
-        unsafe { LoanedPayloadUninitMut::new_unchecked(self.payload.as_uninit_mut_slice(), kind) }
+        unsafe {
+            LoanedPayloadUninitMut::new_unchecked(self.payload.as_uninit_mut_slice(), provenance)
+        }
     }
 
     unsafe fn assume_payload_init(self) -> Self::Initialized {
@@ -223,24 +233,6 @@ impl ZenohRxFrame {
     #[must_use]
     pub fn sample(&self) -> &Sample {
         &self.sample
-    }
-
-    /// Borrows a typed payload only when the Zenoh payload is one SHM-backed region.
-    ///
-    /// This is stricter than [`UZeroCopyRxFrame::try_contiguous_payload`]: a
-    /// Vec-backed or segmented payload is rejected instead of being treated as a
-    /// zero-copy typed receive path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the Zenoh payload is not SHM-backed or when the
-    /// selected payload codec rejects the borrowed payload bytes.
-    pub fn borrow_shm_payload_as<C, T>(&self) -> Result<&T, UWireError>
-    where
-        C: PayloadCodec + BorrowPayload<T>,
-        T: ?Sized,
-    {
-        self.borrow_loaned_payload_as::<C, T>()
     }
 }
 
@@ -303,7 +295,9 @@ impl ULoanedContiguousZeroCopyRxFrame for ZenohRxFrame {
         // - Per https://doc.rust-lang.org/stable/std/slice/fn.from_raw_parts.html#safety,
         //   a borrowed slice must be valid for reads and contained within one
         //   allocation; Zenoh's `ZShm` lease supplies that external provenance.
-        Ok(unsafe { LoanedPayload::new_unchecked(shm.as_ref(), PayloadLoanKind::SharedMemory) })
+        Ok(unsafe {
+            LoanedPayload::new_unchecked(shm.as_ref(), PayloadLoanProvenance::SharedMemory)
+        })
     }
 }
 
@@ -312,14 +306,14 @@ impl UZeroCopyTransport for UPTransportZenoh {
     type Tx = ZenohTxBuffer;
     type Rx = ZenohRxFrame;
 
-    async fn reserve(
-        &self,
-        metadata: UFrameMetadata,
-        payload_len: usize,
-        alignment: usize,
-    ) -> Result<Self::Tx, UStatus> {
-        let (zenoh_key, attachment, priority, payload) =
-            reserve_tx_parts(self, &metadata, payload_len, alignment)?;
+    async fn loan_tx(&self, spec: UTxLoanSpec) -> Result<Self::Tx, UStatus> {
+        let metadata = spec.metadata().clone();
+        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(
+            self,
+            &metadata,
+            spec.payload_len(),
+            spec.payload_alignment(),
+        )?;
         Ok(ZenohTxBuffer {
             metadata,
             zenoh_key,
@@ -441,14 +435,14 @@ impl UZeroCopyTransport for UPTransportZenoh {
 impl UZeroCopyUninitTransport for UPTransportZenoh {
     type UninitTx = ZenohUninitTxBuffer;
 
-    async fn reserve_uninit(
-        &self,
-        metadata: UFrameMetadata,
-        payload_len: usize,
-        alignment: usize,
-    ) -> Result<Self::UninitTx, UStatus> {
-        let (zenoh_key, attachment, priority, payload) =
-            reserve_tx_parts(self, &metadata, payload_len, alignment)?;
+    async fn loan_uninit_tx(&self, spec: UTxLoanSpec) -> Result<Self::UninitTx, UStatus> {
+        let metadata = spec.metadata().clone();
+        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(
+            self,
+            &metadata,
+            spec.payload_len(),
+            spec.payload_alignment(),
+        )?;
         Ok(ZenohUninitTxBuffer {
             metadata,
             zenoh_key,

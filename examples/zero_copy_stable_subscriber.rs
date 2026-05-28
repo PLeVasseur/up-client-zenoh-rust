@@ -16,7 +16,6 @@ mod common;
 use std::sync::Arc;
 
 use up_rust::{
-    payload::StableContainerPayload,
     zero_copy::{
         ULoanedContiguousZeroCopyRxFrame, UZeroCopyListener, UZeroCopyRxFrame, UZeroCopyTransport,
     },
@@ -39,11 +38,13 @@ struct StablePoseListener;
 #[async_trait::async_trait]
 impl UZeroCopyListener<ZenohRxFrame> for StablePoseListener {
     async fn on_receive_zero_copy(&self, frame: ZenohRxFrame) {
-        match frame.borrow_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>() {
+        match frame.borrow_stable_payload::<VehiclePose>() {
             Ok(pose) => println!(
-                "Received stable SHM pose [source: {}, loan kind: {:?}, pose: {:?}]",
+                "Received stable SHM pose [source: {}, loan provenance: {:?}, pose: {:?}]",
                 frame.metadata().source().to_uri(false),
-                frame.payload_loan_kind(),
+                frame
+                    .payload_loan_provenance()
+                    .expect("stable SHM payload should report loan provenance"),
                 pose
             ),
             Err(error) => println!("Dropped non-stable or non-SHM Zenoh payload: {error}"),

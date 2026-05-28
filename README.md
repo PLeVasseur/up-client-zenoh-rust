@@ -42,7 +42,7 @@ Most developers will want to create an instance of the *UPTransportZenoh* struct
 
 `UPTransportZenoh` implements `UOwnedTransport` in all builds. It preserves native `UFrameMetadata`, including `UAttributes` and `PayloadEncoding`, in the Zenoh attachment while carrying the application payload as Zenoh payload bytes. Standard encodings carry upstream `UPayloadFormat` values; custom encodings carry a native custom ID plus content type.
 
-When the `zero-copy` feature is enabled, `UPTransportZenoh` also implements `up_rust::zero_copy::UZeroCopyTransport` using Zenoh shared-memory payload buffers on transmit and Zenoh `ZBytes` lease views on receive. Metadata is final at `reserve`: the binding maps it to the Zenoh key, priority, and attachment before the caller writes into `ZenohTxBuffer::payload_mut()`.
+When the `zero-copy` feature is enabled, `UPTransportZenoh` also implements `up_rust::zero_copy::UZeroCopyTransport` using Zenoh shared-memory payload buffers on transmit and Zenoh `ZBytes` lease views on receive. Transmit loans are requested with `UTxLoanSpec`; metadata is final at `loan_tx`, where the binding maps it to the Zenoh key, priority, and attachment before the caller writes into `ZenohTxBuffer::payload_mut()`.
 
 | uProtocol frame part | Zenoh representation |
 | --- | --- |
@@ -61,14 +61,14 @@ async fn send<T>(transport: &T, metadata: UFrameMetadata) -> Result<(), up_rust:
 where
     T: up_rust::UOwnedTransport,
 {
-let payload: &[u8] = b"payload";
-transport
-    .send_serialized::<RawBytes, _>(metadata, &payload)
-    .await
+    let payload: &[u8] = b"payload";
+    transport
+        .send_serialized::<RawBytes, _>(metadata, &payload)
+        .await
 }
 ```
 
-Zero-copy send helpers reserve Zenoh SHM first, then serialize directly into the loan:
+Zero-copy send helpers create a Zenoh SHM loan first, then serialize directly into the loan:
 
 ```rust
 use up_rust::{payload::RawBytes, zero_copy::UZeroCopyTransportExt, UFrameMetadata};
@@ -77,10 +77,10 @@ async fn send<T>(transport: &T, metadata: UFrameMetadata) -> Result<(), up_rust:
 where
     T: up_rust::zero_copy::UZeroCopyTransport,
 {
-let payload: &[u8] = b"payload";
-transport
-    .send_serialized_zero_copy::<RawBytes, _>(metadata, &payload)
-    .await
+    let payload: &[u8] = b"payload";
+    transport
+        .send_serialized_zero_copy::<RawBytes, _>(metadata, &payload)
+        .await
 }
 ```
 
@@ -115,6 +115,11 @@ On the zero-copy receive path, Zenoh payload bytes must be SHM-backed to qualify
 as loan-backed stable payloads. Pull receive returns `FAILED_PRECONDITION` for
 non-SHM payload bytes, while listeners drop non-SHM payloads with a warning.
 Use the owned transport APIs for interoperable regular Zenoh payload bytes.
+Stable-container typed receive uses `borrow_stable_payload<T>()` on the
+loan-backed RX lease. The direct stable-container proof is
+`send_uninit_loaned_payload_as::<StableContainerPayload<T>, T>` on TX followed by
+`receive_zero_copy` and `borrow_stable_payload<T>()` on RX; non-SHM `ZBytes`
+payloads are not treated as strict zero-copy receive.
 
 The zero-copy builder uses a 64 MiB Zenoh SHM provider segment by default.
 `UPTransportZenohBuilder::with_shm_segment_size(size)?` can override it and
