@@ -412,12 +412,21 @@ impl<S: BuilderState> UPTransportZenohBuilder<S> {
     ///
     /// The value is used lazily when the first zero-copy transmit loan is
     /// reserved. If not set explicitly, the default is 64 MiB.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UCode::INVALID_ARGUMENT`] when `shm_segment_size` is zero.
     #[cfg(feature = "zero-copy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "zero-copy")))]
-    #[must_use]
-    pub fn with_shm_segment_size(mut self, shm_segment_size: usize) -> Self {
+    pub fn with_shm_segment_size(mut self, shm_segment_size: usize) -> Result<Self, UStatus> {
+        if shm_segment_size == 0 {
+            return Err(UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                "Zenoh SHM segment size must be greater than zero",
+            ));
+        }
         self.common.shm_segment_size = shm_segment_size;
-        self
+        Ok(self)
     }
 }
 
@@ -449,8 +458,23 @@ mod tests {
         let builder = UPTransportZenoh::builder("local_authority")
             .expect("valid authority")
             .with_config(zenoh_config::Config::default())
-            .with_shm_segment_size(1024 * 1024);
+            .with_shm_segment_size(1024 * 1024)
+            .expect("valid SHM segment size");
 
         assert_eq!(builder.common.shm_segment_size, 1024 * 1024);
+    }
+
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn builder_rejects_zero_shm_segment_size() {
+        let result = UPTransportZenoh::builder("local_authority")
+            .expect("valid authority")
+            .with_config(zenoh_config::Config::default())
+            .with_shm_segment_size(0);
+
+        match result {
+            Ok(_) => panic!("zero SHM segment size must be rejected"),
+            Err(err) => assert_eq!(err.get_code(), UCode::INVALID_ARGUMENT),
+        }
     }
 }

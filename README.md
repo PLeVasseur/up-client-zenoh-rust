@@ -91,7 +91,7 @@ materializing or default-initializing an application payload buffer:
 use up_rust::{payload::StableContainerPayload, UFrameMetadata, UZeroCopyUninitTransportExt};
 
 #[repr(C)]
-#[derive(Clone, Copy, up_rust::StablePayload)]
+#[derive(Clone, Copy, up_rust::StablePayload, up_rust::ByteBackedStablePayload)]
 #[stable_payload(type_name = "example.vehicle.VehiclePose")]
 struct VehiclePose {
     x: u64,
@@ -115,6 +115,10 @@ On the zero-copy receive path, Zenoh payload bytes must be SHM-backed to qualify
 as loan-backed stable payloads. Pull receive returns `FAILED_PRECONDITION` for
 non-SHM payload bytes, while listeners drop non-SHM payloads with a warning.
 Use the owned transport APIs for interoperable regular Zenoh payload bytes.
+
+The zero-copy builder uses a 64 MiB Zenoh SHM provider segment by default.
+`UPTransportZenohBuilder::with_shm_segment_size(size)?` can override it and
+rejects `0` with `INVALID_ARGUMENT` before any SHM provider is initialized.
 
 Both libraries need to be added as dependencies to your crate, e.g. using the following commands:
 

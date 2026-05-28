@@ -69,6 +69,10 @@ struct StablePoseSender(mpsc::UnboundedSender<VehiclePose>);
 #[async_trait]
 impl UZeroCopyListener<ZenohRxFrame> for StablePoseSender {
     async fn on_receive_zero_copy(&self, frame: ZenohRxFrame) {
+        assert_eq!(
+            frame.metadata().encoding(),
+            Some(&StableContainerPayload::<VehiclePose>::encoding())
+        );
         zero_copy_conformance::verify_loaned_rx_payload_layout_for(
             &frame,
             std::mem::size_of::<VehiclePose>(),
@@ -160,6 +164,83 @@ async fn zero_copy_reserve_allocates_shm_payload() -> Result<(), Box<dyn std::er
 
     loan.payload_mut().copy_from_slice(b"shm-test");
     assert_eq!(loan.payload(), b"shm-test");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_reserve_rejects_payload_without_encoding(
+) -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-missing-encoding-{}", std::process::id());
+    let transport = test_lib::create_up_transport_zenoh(&authority, None).await?;
+    let source = topic(&authority, 0x9306);
+
+    let result = transport
+        .reserve(UFrameMetadata::publish(source), 1, 1)
+        .await;
+
+    match result {
+        Ok(_) => panic!("payload bytes without encoding must be rejected"),
+        Err(err) => assert_eq!(err.get_code(), UCode::INVALID_ARGUMENT),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_preserves_present_empty_payload() -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-present-empty-{}", std::process::id());
+    let transport = Arc::new(test_lib::create_up_transport_zenoh(&authority, None).await?);
+    let source = topic(&authority, 0x9307);
+    let receiver = transport.clone();
+    let receive_source = source.clone();
+    let receive_task =
+        tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let loan = transport
+        .reserve(
+            UFrameMetadata::publish(source).with_encoding(RawBytes::encoding()),
+            0,
+            1,
+        )
+        .await?;
+    transport.send_zero_copy(loan).await?;
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), receive_task).await???;
+    assert!(frame.has_payload());
+    assert_eq!(frame.payload_len(), 0);
+    assert_eq!(frame.metadata().encoding(), Some(&RawBytes::encoding()));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_preserves_no_payload() -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-no-payload-{}", std::process::id());
+    let transport = Arc::new(test_lib::create_up_transport_zenoh(&authority, None).await?);
+    let source = topic(&authority, 0x9308);
+    let receiver = transport.clone();
+    let receive_source = source.clone();
+    let receive_task =
+        tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let loan = transport
+        .reserve(UFrameMetadata::publish(source), 0, 1)
+        .await?;
+    transport.send_zero_copy(loan).await?;
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), receive_task).await???;
+    assert!(!frame.has_payload());
+    assert_eq!(frame.payload_len(), 0);
+    assert!(frame.metadata().encoding().is_none());
     Ok(())
 }
 
