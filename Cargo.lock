@@ -3592,7 +3592,7 @@ dependencies = [
 [[package]]
 name = "up-rust"
 version = "0.11.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=d88906120769088c0c31c6fd579a146d7d96ec1a#d88906120769088c0c31c6fd579a146d7d96ec1a"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=b45bf7f28a3a943ed4c9153571f5d6892458d937#b45bf7f28a3a943ed4c9153571f5d6892458d937"
 dependencies = [
  "async-trait",
  "base64",
@@ -3616,7 +3616,7 @@ dependencies = [
 [[package]]
 name = "up-rust-macros"
 version = "0.11.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=d88906120769088c0c31c6fd579a146d7d96ec1a#d88906120769088c0c31c6fd579a146d7d96ec1a"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=b45bf7f28a3a943ed4c9153571f5d6892458d937#b45bf7f28a3a943ed4c9153571f5d6892458d937"
 dependencies = [
  "proc-macro2",
  "quote",
