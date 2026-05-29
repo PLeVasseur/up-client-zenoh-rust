@@ -119,7 +119,7 @@ async fn owned_transport_round_trips_custom_payload_codec() -> Result<(), Box<dy
         counter: 42,
     };
     transport
-        .send_serialized::<TestReadingWire, _>(UFrameMetadata::publish(topic), &reading)
+        .send_serialized::<TestReadingWire, _>(UFrameMetadata::try_publish(topic)?, &reading)
         .await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -155,7 +155,7 @@ async fn owned_transport_round_trips_protobuf_payload_codec(
     payload.value = "protobuf over zenoh owned".to_string();
 
     transport
-        .send_serialized::<ProtobufPayload, _>(UFrameMetadata::publish(topic), &payload)
+        .send_serialized::<ProtobufPayload, _>(UFrameMetadata::try_publish(topic)?, &payload)
         .await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -193,12 +193,12 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
         .await?;
 
     let id = UUID::build();
-    let attributes = UAttributes::new(
+    let attributes = UAttributes::try_new(
         id.clone(),
         source.clone(),
         Some(sink.clone()),
         UMessageType::Notification,
-    )
+    )?
     .with_priority(UPriority::CS5)
     .with_ttl(5_000)
     .with_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00");
@@ -209,7 +209,7 @@ async fn owned_transport_preserves_native_frame_metadata() -> Result<(), Box<dyn
 
     transport
         .send_serialized::<TestReadingWire, _>(
-            UFrameMetadata::new(attributes, TestReadingWire::encoding()),
+            UFrameMetadata::try_new(attributes, TestReadingWire::encoding())?,
             &reading,
         )
         .await?;

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use up_rust::{
     zero_copy::{
-        ULoanedContiguousZeroCopyRxFrame, UZeroCopyListener, UZeroCopyRxFrame, UZeroCopyTransport,
+        UFrameView, ULoanedContiguousZeroCopyRxFrame, UZeroCopyListener, UZeroCopyTransport,
     },
     UUri,
 };

@@ -21,14 +21,14 @@ use async_trait::async_trait;
 use serial_test::serial;
 use tokio::{sync::mpsc, time::Duration};
 use up_rust::{
-    payload::{PlacementDefault, RawBytes, StableContainerPayload},
+    payload::{PayloadLayout, PlacementDefault, RawBytes, StableContainerPayload},
     test_util::zero_copy_conformance,
     zero_copy::{
-        PayloadLoanProvenance, ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UZeroCopyListener,
-        UZeroCopyPayloadCopyExt, UZeroCopyRxFrame, UZeroCopyTransport, UZeroCopyTransportExt,
+        PayloadLoanProvenance, UFrameView, ULoanedContiguousZeroCopyRxFrame, UTxBuffer,
+        UTxLoanSpec, UZeroCopyListener, UZeroCopyPayloadCopyExt, UZeroCopyTransport,
+        UZeroCopyTransportExt, UZeroCopyUninitTransportExt,
     },
-    PayloadLayout, UAttributes, UCode, UFrameMetadata, UMessageType, UOwnedFrame, UOwnedTransport,
-    UTxLoanSpec, UUri, UZeroCopyUninitTransportExt, UUID,
+    UAttributes, UCode, UFrameMetadata, UMessageType, UOwnedFrame, UOwnedTransport, UUri, UUID,
 };
 use up_transport_zenoh::ZenohRxFrame;
 
@@ -56,12 +56,15 @@ struct ZeroCopyFrameSender(mpsc::UnboundedSender<UOwnedFrame>);
 impl UZeroCopyListener<ZenohRxFrame> for ZeroCopyFrameSender {
     async fn on_receive_zero_copy(&self, frame: ZenohRxFrame) {
         self.0
-            .send(UOwnedFrame::new(
-                frame.metadata().clone(),
-                frame
-                    .try_payload_to_vec()
-                    .expect("zero-copy payload slices should match payload_len"),
-            ))
+            .send(
+                UOwnedFrame::try_with_payload(
+                    frame.metadata().clone(),
+                    frame
+                        .try_payload_to_vec()
+                        .expect("zero-copy payload slices should match payload_len"),
+                )
+                .expect("zero-copy frame should be valid"),
+            )
             .expect("zero-copy receive channel should be open");
     }
 }
@@ -118,7 +121,7 @@ async fn zero_copy_stable_container_rejects_wrong_metadata_from_shm(
     let payload = [0_u8; std::mem::size_of::<VehiclePose>()];
     transport
         .send_serialized_zero_copy::<RawBytes, _>(
-            UFrameMetadata::publish(source),
+            UFrameMetadata::try_publish(source)?,
             &payload.as_slice(),
         )
         .await?;
@@ -157,7 +160,7 @@ async fn zero_copy_loan_tx_allocates_shm_payload() -> Result<(), Box<dyn std::er
     let source = topic(&authority, 0x9300);
     let mut loan = transport
         .loan_tx(UTxLoanSpec::payload(
-            UFrameMetadata::publish(source).with_encoding(RawBytes::encoding()),
+            UFrameMetadata::try_publish(source)?.with_encoding(RawBytes::encoding()),
             PayloadLayout::new(8, 1)?,
         )?)
         .await?;
@@ -176,7 +179,10 @@ async fn zero_copy_loan_spec_rejects_payload_without_encoding(
     let authority = format!("zenoh-zc-missing-encoding-{}", std::process::id());
     let source = topic(&authority, 0x9306);
 
-    let result = UTxLoanSpec::payload(UFrameMetadata::publish(source), PayloadLayout::new(1, 1)?);
+    let result = UTxLoanSpec::payload(
+        UFrameMetadata::try_publish(source)?,
+        PayloadLayout::new(1, 1)?,
+    );
 
     match result {
         Ok(_) => panic!("payload bytes without encoding must be rejected"),
@@ -201,7 +207,7 @@ async fn zero_copy_preserves_present_empty_payload() -> Result<(), Box<dyn std::
 
     let loan = transport
         .loan_tx(UTxLoanSpec::present_empty_payload(
-            UFrameMetadata::publish(source).with_encoding(RawBytes::encoding()),
+            UFrameMetadata::try_publish(source)?.with_encoding(RawBytes::encoding()),
         )?)
         .await?;
     transport.send_zero_copy(loan).await?;
@@ -228,7 +234,9 @@ async fn zero_copy_preserves_no_payload() -> Result<(), Box<dyn std::error::Erro
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let loan = transport
-        .loan_tx(UTxLoanSpec::no_payload(UFrameMetadata::publish(source))?)
+        .loan_tx(UTxLoanSpec::no_payload(UFrameMetadata::try_publish(
+            source,
+        )?)?)
         .await?;
     transport.send_zero_copy(loan).await?;
 
@@ -256,7 +264,7 @@ async fn zero_copy_stable_container_payload_borrows_from_shm(
 
     transport
         .send_uninit_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
-            UFrameMetadata::publish(source),
+            UFrameMetadata::try_publish(source)?,
             |slot| Ok(slot.write(VehiclePose { x: 11, y: 22 })),
         )
         .await?;
@@ -285,7 +293,7 @@ async fn zero_copy_stable_container_rejects_owned_payload_as_loaned_rx(
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let frame = UOwnedFrame::from_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
-        UFrameMetadata::publish(source),
+        UFrameMetadata::try_publish(source)?,
         &VehiclePose { x: 11, y: 22 },
     )?;
     transport.send_owned(frame).await?;
@@ -324,10 +332,10 @@ async fn zero_copy_publish_fanout_delivers_to_exact_and_source_wildcard_listener
 
     let payload = b"zenoh zc publish fanout";
     let id = UUID::build();
-    let attributes = UAttributes::new(id.clone(), source.clone(), None, UMessageType::Publish);
+    let attributes = UAttributes::try_new(id.clone(), source.clone(), None, UMessageType::Publish)?;
     transport
         .send_serialized_zero_copy::<RawBytes, _>(
-            UFrameMetadata::new(attributes, RawBytes::encoding()),
+            UFrameMetadata::try_new(attributes, RawBytes::encoding())?,
             &payload.as_slice(),
         )
         .await?;
@@ -372,16 +380,16 @@ async fn zero_copy_targeted_fanout_delivers_to_exact_and_sink_wildcard_listeners
         .await?;
 
     let id = UUID::build();
-    let attributes = UAttributes::new(
+    let attributes = UAttributes::try_new(
         id.clone(),
         source.clone(),
         Some(sink.clone()),
         UMessageType::Notification,
-    );
+    )?;
     let payload = b"zenoh zc targeted fanout";
     transport
         .send_serialized_zero_copy::<RawBytes, _>(
-            UFrameMetadata::new(attributes, RawBytes::encoding()),
+            UFrameMetadata::try_new(attributes, RawBytes::encoding())?,
             &payload.as_slice(),
         )
         .await?;

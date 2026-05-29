@@ -88,7 +88,7 @@ Stable typed payloads can be constructed directly in Zenoh SHM without first
 materializing or default-initializing an application payload buffer:
 
 ```rust
-use up_rust::{payload::StableContainerPayload, UFrameMetadata, UZeroCopyUninitTransportExt};
+use up_rust::{payload::StableContainerPayload, zero_copy::UZeroCopyUninitTransportExt, UFrameMetadata};
 
 #[repr(C)]
 #[derive(Clone, Copy, up_rust::StablePayload, up_rust::ByteBackedStablePayload)]
@@ -100,7 +100,7 @@ struct VehiclePose {
 
 async fn send<T>(transport: &T, metadata: UFrameMetadata) -> Result<(), up_rust::UStatus>
 where
-    T: up_rust::UZeroCopyUninitTransport,
+    T: up_rust::zero_copy::UZeroCopyUninitTransport,
 {
     transport
         .send_uninit_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
@@ -120,6 +120,11 @@ loan-backed RX lease. The direct stable-container proof is
 `send_uninit_loaned_payload_as::<StableContainerPayload<T>, T>` on TX followed by
 `receive_zero_copy` and `borrow_stable_payload<T>()` on RX; non-SHM `ZBytes`
 payloads are not treated as strict zero-copy receive.
+
+Conformance coverage for the native-frame path includes attachment metadata
+round trips, standard and custom payload encoding preservation, payload/encoding
+mismatch rejection, present-empty versus absent payload handling, and strict
+rejection of non-SHM payloads on loan-backed stable-container receive.
 
 The zero-copy builder uses a 64 MiB Zenoh SHM provider segment by default.
 `UPTransportZenohBuilder::with_shm_segment_size(size)?` can override it and

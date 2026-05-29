@@ -14,8 +14,8 @@
 mod common;
 
 use up_rust::{
-    payload::StableContainerPayload, LocalUriProvider, StaticUriProvider, UFrameMetadata,
-    UZeroCopyUninitTransportExt,
+    payload::StableContainerPayload, zero_copy::UZeroCopyUninitTransportExt, LocalUriProvider,
+    StaticUriProvider, UFrameMetadata,
 };
 use up_transport_zenoh::UPTransportZenoh;
 
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         transport
             .send_uninit_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
-                UFrameMetadata::publish(topic.clone()),
+                UFrameMetadata::try_publish(topic.clone())?,
                 |slot| Ok(slot.write(pose)),
             )
             .await?;

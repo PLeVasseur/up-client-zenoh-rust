@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         transport
             .send_serialized::<RawBytes, _>(
-                UFrameMetadata::publish(topic.clone()),
+                UFrameMetadata::try_publish(topic.clone())?,
                 &data.as_bytes(),
             )
             .await?;

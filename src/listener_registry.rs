@@ -118,9 +118,13 @@ impl ListenerRegistry {
                 return;
             }
             let frame = if header.encoding().is_some() {
-                UOwnedFrame::new(header, sample.payload().to_bytes().to_vec())
+                UOwnedFrame::try_with_payload(header, sample.payload().to_bytes().to_vec())
             } else {
-                UOwnedFrame::without_payload(header)
+                UOwnedFrame::try_without_payload(header)
+            };
+            let Ok(frame) = frame else {
+                warn!("Ignoring Zenoh Sample with invalid owned frame metadata");
+                return;
             };
             let is_valid = validate_owned_frame_for_transport(&frame).is_ok();
             if is_valid {

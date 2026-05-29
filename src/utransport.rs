@@ -16,10 +16,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{error, trace};
 use up_rust::{
-    transport::{verify_filter_criteria, ComparableOwnedListener},
-    validate_owned_frame_for_transport, PayloadEncoding, UAttributes, UCode, UFrameMetadata,
-    UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UPriority, UStatus,
-    UUri, UUID,
+    transport::{ComparableOwnedListener, UOwnedTransportImpl, ValidatedOwnedFrame},
+    PayloadEncoding, UAttributes, UCode, UFrameMetadata, UMessageType, UOwnedListener,
+    UPayloadFormat, UPriority, UStatus, UUri, UUID,
 };
 use zenoh::{bytes::ZBytes, qos::Priority};
 
@@ -110,7 +109,8 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
     let permission_level = take_optional_u32(&mut bytes)?;
     let commstatus = take_optional_code(&mut bytes)?;
 
-    let mut attributes = UAttributes::new(id, source, sink, message_type).with_priority(priority);
+    let mut attributes =
+        UAttributes::new_unchecked(id, source, sink, message_type).with_priority(priority);
     if let Some(ttl) = ttl {
         attributes = attributes.with_ttl(ttl);
     }
@@ -136,7 +136,7 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> anyhow::Resul
         )
         .into());
     }
-    Ok(UFrameMetadata::new(attributes, encoding))
+    Ok(UFrameMetadata::new_unchecked(attributes, encoding))
 }
 
 fn write_encoding(bytes: &mut Vec<u8>, encoding: &PayloadEncoding) -> anyhow::Result<()> {
@@ -410,9 +410,9 @@ pub(crate) fn to_zenoh_key_string(
 }
 
 #[async_trait]
-impl UOwnedTransport for UPTransportZenoh {
-    async fn send_owned(&self, frame: UOwnedFrame) -> Result<(), UStatus> {
-        validate_owned_frame_for_transport(&frame)?;
+impl UOwnedTransportImpl for UPTransportZenoh {
+    async fn send_validated_owned(&self, frame: ValidatedOwnedFrame) -> Result<(), UStatus> {
+        let frame = frame.into_inner();
         let header = frame.metadata();
         let zenoh_key = to_zenoh_key_string(
             header.attributes().source(),
@@ -438,13 +438,12 @@ impl UOwnedTransport for UPTransportZenoh {
         Ok(())
     }
 
-    async fn register_owned_listener(
+    async fn register_validated_owned_listener(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UOwnedListener>,
     ) -> Result<(), UStatus> {
-        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -452,13 +451,12 @@ impl UOwnedTransport for UPTransportZenoh {
             .await
     }
 
-    async fn unregister_owned_listener(
+    async fn unregister_validated_owned_listener(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UOwnedListener>,
     ) -> Result<(), UStatus> {
-        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -475,7 +473,7 @@ mod tests {
         let source = UUri::try_from("//vehicle/A8000/2/8001").unwrap();
         let sink = UUri::try_from("//service/B8000/1/0").unwrap();
         let request_id = UUID::build();
-        let attributes = UAttributes::new(id, source, Some(sink), UMessageType::Response)
+        let attributes = UAttributes::new_unchecked(id, source, Some(sink), UMessageType::Response)
             .with_priority(UPriority::CS5)
             .with_ttl(3_601)
             .with_request_id(request_id)
@@ -483,7 +481,7 @@ mod tests {
             .with_token("token")
             .with_permission_level(7)
             .with_comm_status(UCode::UNAVAILABLE);
-        UFrameMetadata::new(
+        UFrameMetadata::new_unchecked(
             attributes,
             PayloadEncoding::custom("custom-json", "application/custom+json"),
         )

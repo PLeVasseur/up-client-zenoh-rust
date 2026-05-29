@@ -18,15 +18,14 @@ use async_trait::async_trait;
 use tracing::{trace, warn};
 use up_rust::{
     payload::UWireError,
-    transport::verify_filter_criteria,
     validate_frame_metadata_for_payload,
     zero_copy::UZeroCopyListener,
     zero_copy::{
-        LoanedPayload, LoanedPayloadUninitMut, PayloadLoanProvenance,
-        ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UUninitTxBuffer, UZeroCopyRxFrame,
-        UZeroCopyTransport,
+        LoanedPayload, LoanedPayloadUninitMut, PayloadLoanProvenance, UFrameView,
+        ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UUninitTxBuffer, UZeroCopyRxLease,
+        UZeroCopyTransportImpl, UZeroCopyUninitTransportImpl, ValidatedTxLoanSpec,
     },
-    UCode, UFrameMetadata, UStatus, UTxLoanSpec, UUri, UZeroCopyUninitTransport,
+    UCode, UFrameMetadata, UStatus, UUri,
 };
 use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
@@ -204,16 +203,16 @@ impl UUninitTxBuffer for ZenohUninitTxBuffer {
 /// Zenoh zero-copy receive lease used by the `zero-copy` feature.
 ///
 /// The payload is exposed from Zenoh [`ZBytes`] through
-/// [`UZeroCopyRxFrame::payload_reader`] and
-/// [`UZeroCopyRxFrame::payload_slices`]. The lease may be segmented, so generic
+/// [`UFrameView::payload_reader`] and
+/// [`UFrameView::payload_slices`]. The lease may be segmented, so generic
 /// callers should use reader-based deserialization instead of assuming a
-/// contiguous borrowed slice. [`UZeroCopyRxFrame::try_contiguous_payload`] returns
+/// contiguous borrowed slice. [`UFrameView::try_contiguous_payload`] returns
 /// `Some` only when the underlying `ZBytes` payload is already one slice.
 ///
 /// [`ZBytes`]: zenoh::bytes::ZBytes
-/// [`UZeroCopyRxFrame::payload_reader`]: up_rust::zero_copy::UZeroCopyRxFrame::payload_reader
-/// [`UZeroCopyRxFrame::payload_slices`]: up_rust::zero_copy::UZeroCopyRxFrame::payload_slices
-/// [`UZeroCopyRxFrame::try_contiguous_payload`]: up_rust::zero_copy::UZeroCopyRxFrame::try_contiguous_payload
+/// [`UFrameView::payload_reader`]: up_rust::zero_copy::UFrameView::payload_reader
+/// [`UFrameView::payload_slices`]: up_rust::zero_copy::UFrameView::payload_slices
+/// [`UFrameView::try_contiguous_payload`]: up_rust::zero_copy::UFrameView::try_contiguous_payload
 pub struct ZenohRxFrame {
     metadata: UFrameMetadata,
     sample: Sample,
@@ -226,7 +225,7 @@ impl ZenohRxFrame {
 
     /// Returns the underlying Zenoh sample.
     ///
-    /// Most uProtocol code should use the [`UZeroCopyRxFrame`] methods instead.
+    /// Most uProtocol code should use the [`UFrameView`] methods instead.
     /// This accessor is provided for Zenoh-specific diagnostics or advanced
     /// integrations that need to inspect sample metadata outside the uProtocol
     /// frame model.
@@ -236,7 +235,7 @@ impl ZenohRxFrame {
     }
 }
 
-impl UZeroCopyRxFrame for ZenohRxFrame {
+impl UFrameView for ZenohRxFrame {
     type PayloadReader<'a>
         = ZBytesReader<'a>
     where
@@ -280,6 +279,8 @@ impl UZeroCopyRxFrame for ZenohRxFrame {
     }
 }
 
+impl UZeroCopyRxLease for ZenohRxFrame {}
+
 impl ULoanedContiguousZeroCopyRxFrame for ZenohRxFrame {
     fn loaned_contiguous_payload(&self) -> Result<LoanedPayload<'_>, UWireError> {
         let shm = self
@@ -302,11 +303,11 @@ impl ULoanedContiguousZeroCopyRxFrame for ZenohRxFrame {
 }
 
 #[async_trait]
-impl UZeroCopyTransport for UPTransportZenoh {
+impl UZeroCopyTransportImpl for UPTransportZenoh {
     type Tx = ZenohTxBuffer;
     type Rx = ZenohRxFrame;
 
-    async fn loan_tx(&self, spec: UTxLoanSpec) -> Result<Self::Tx, UStatus> {
+    async fn loan_validated_tx(&self, spec: ValidatedTxLoanSpec) -> Result<Self::Tx, UStatus> {
         let metadata = spec.metadata().clone();
         let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(
             self,
@@ -323,7 +324,7 @@ impl UZeroCopyTransport for UPTransportZenoh {
         })
     }
 
-    async fn send_zero_copy(&self, buffer: Self::Tx) -> Result<(), UStatus> {
+    async fn send_validated_zero_copy(&self, buffer: Self::Tx) -> Result<(), UStatus> {
         validate_frame_metadata_for_payload(
             &buffer.metadata,
             buffer.metadata.encoding().is_some(),
@@ -346,12 +347,11 @@ impl UZeroCopyTransport for UPTransportZenoh {
         Ok(())
     }
 
-    async fn receive_zero_copy(
+    async fn receive_validated_zero_copy(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
     ) -> Result<Self::Rx, UStatus> {
-        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         let subscriber = self
@@ -399,13 +399,12 @@ impl UZeroCopyTransport for UPTransportZenoh {
         }
     }
 
-    async fn register_zero_copy_listener(
+    async fn register_validated_zero_copy_listener(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
-        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -413,13 +412,12 @@ impl UZeroCopyTransport for UPTransportZenoh {
             .await
     }
 
-    async fn unregister_zero_copy_listener(
+    async fn unregister_validated_zero_copy_listener(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
-        verify_filter_criteria(source_filter, sink_filter)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -432,10 +430,13 @@ impl UZeroCopyTransport for UPTransportZenoh {
 }
 
 #[async_trait]
-impl UZeroCopyUninitTransport for UPTransportZenoh {
+impl UZeroCopyUninitTransportImpl for UPTransportZenoh {
     type UninitTx = ZenohUninitTxBuffer;
 
-    async fn loan_uninit_tx(&self, spec: UTxLoanSpec) -> Result<Self::UninitTx, UStatus> {
+    async fn loan_validated_uninit_tx(
+        &self,
+        spec: ValidatedTxLoanSpec,
+    ) -> Result<Self::UninitTx, UStatus> {
         let metadata = spec.metadata().clone();
         let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(
             self,
