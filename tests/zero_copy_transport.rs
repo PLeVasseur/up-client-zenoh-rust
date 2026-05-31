@@ -50,6 +50,42 @@ struct VehiclePose {
     y: u64,
 }
 
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    up_rust::StablePayload,
+    up_rust::ByteBackedStablePayload,
+    up_rust::StablePayloadInit,
+)]
+#[stable_payload(type_name = "org.eclipse.uprotocol.transport.example.NoZeroSensorHeader")]
+struct NoZeroSensorHeader {
+    case_id: u32,
+    sequence: u32,
+    logical_payload_len: u32,
+}
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    up_rust::StablePayload,
+    up_rust::ByteBackedStablePayload,
+    up_rust::StablePayloadInit,
+)]
+#[stable_payload(type_name = "org.eclipse.uprotocol.transport.example.NoZeroSensorFrame")]
+struct NoZeroSensorFrame {
+    header: NoZeroSensorHeader,
+    checksum: u32,
+    payload: [u8; 4096],
+}
+
 struct ZeroCopyFrameSender(mpsc::UnboundedSender<UOwnedFrame>);
 
 #[async_trait]
@@ -96,6 +132,43 @@ impl UZeroCopyListener<ZenohRxFrame> for StablePoseSender {
         self.0
             .send(*pose)
             .expect("stable pose receive channel should be open");
+    }
+}
+
+struct NoZeroSensorFrameSender(mpsc::UnboundedSender<(u32, u32, u32, u32, u8, u8)>);
+
+#[async_trait]
+impl UZeroCopyListener<ZenohRxFrame> for NoZeroSensorFrameSender {
+    async fn on_receive_zero_copy(&self, frame: ZenohRxFrame) {
+        assert_eq!(
+            frame.metadata().encoding(),
+            Some(&StableContainerPayload::<NoZeroSensorFrame>::encoding())
+        );
+        zero_copy_conformance::verify_loaned_rx_payload_layout_for(
+            &frame,
+            std::mem::size_of::<NoZeroSensorFrame>(),
+            std::mem::align_of::<NoZeroSensorFrame>(),
+        )
+        .expect("stable-container payload should satisfy loaned layout");
+        assert_eq!(
+            frame
+                .payload_loan_provenance()
+                .expect("stable-container payload should report loan provenance"),
+            PayloadLoanProvenance::SharedMemory
+        );
+        let frame = frame
+            .borrow_stable_payload::<NoZeroSensorFrame>()
+            .expect("stable-container payload should be SHM-backed and typed");
+        self.0
+            .send((
+                frame.header.case_id,
+                frame.header.sequence,
+                frame.header.logical_payload_len,
+                frame.checksum,
+                frame.payload[0],
+                frame.payload[4095],
+            ))
+            .expect("no-zero stable frame receive channel should be open");
     }
 }
 
@@ -274,6 +347,48 @@ async fn zero_copy_stable_container_payload_borrows_from_shm(
         .expect("stable-container listener result channel should remain open");
 
     assert_eq!(pose, VehiclePose { x: 11, y: 22 });
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_no_zero_stable_payload_borrows_from_shm(
+) -> Result<(), Box<dyn std::error::Error>> {
+    test_lib::before_test();
+
+    let authority = format!("zenoh-zc-no-zero-stable-{}", std::process::id());
+    let transport = test_lib::create_up_transport_zenoh(&authority, None).await?;
+    let source = topic(&authority, 0x9309);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    transport
+        .register_zero_copy_listener(&source, None, Arc::new(NoZeroSensorFrameSender(tx)))
+        .await?;
+
+    transport
+        .send_uninit_stable_payload_as::<NoZeroSensorFrame>(
+            UFrameMetadata::try_publish(source)?,
+            |frame| {
+                frame
+                    .header(|header| {
+                        header
+                            .case_id(1)
+                            .sequence(2)
+                            .logical_payload_len(4096)
+                            .finish()
+                    })?
+                    .checksum(0x5eed_cafe)
+                    .payload_fill(0x5a)
+                    .finish()
+            },
+        )
+        .await?;
+
+    let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await?
+        .expect("stable-container listener result channel should remain open");
+
+    assert_eq!(received, (1, 2, 4096, 0x5eed_cafe, 0x5a, 0x5a));
     Ok(())
 }
 

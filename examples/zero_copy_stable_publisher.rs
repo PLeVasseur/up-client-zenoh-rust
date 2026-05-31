@@ -14,19 +14,44 @@
 mod common;
 
 use up_rust::{
-    payload::StableContainerPayload, zero_copy::UZeroCopyUninitTransportExt, LocalUriProvider,
-    StaticUriProvider, UFrameMetadata,
+    zero_copy::UZeroCopyUninitTransportExt, LocalUriProvider, StaticUriProvider, UFrameMetadata,
 };
 use up_transport_zenoh::UPTransportZenoh;
 
 #[repr(C)]
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, up_rust::StablePayload, up_rust::ByteBackedStablePayload,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    up_rust::StablePayload,
+    up_rust::ByteBackedStablePayload,
+    up_rust::StablePayloadInit,
 )]
-#[stable_payload(type_name = "example.vehicle.VehiclePose")]
-struct VehiclePose {
-    x: u64,
-    y: u64,
+#[stable_payload(type_name = "org.eclipse.uprotocol.transport.example.NoZeroSensorHeader")]
+struct NoZeroSensorHeader {
+    case_id: u32,
+    sequence: u32,
+    logical_payload_len: u32,
+}
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    up_rust::StablePayload,
+    up_rust::ByteBackedStablePayload,
+    up_rust::StablePayloadInit,
+)]
+#[stable_payload(type_name = "org.eclipse.uprotocol.transport.example.NoZeroSensorFrame")]
+struct NoZeroSensorFrame {
+    header: NoZeroSensorHeader,
+    checksum: u32,
+    payload: [u8; 4096],
 }
 
 #[tokio::main]
@@ -41,20 +66,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let topic = uri_provider.get_resource_uri(0x8001);
 
-    for count in 1_u64..=100 {
-        let pose = VehiclePose {
-            x: count,
-            y: count * 10,
-        };
+    for sequence in 1_u32..=100 {
+        let checksum = 0x5eed_0000 | sequence;
         println!(
-            "Publishing stable SHM pose [topic: {}, pose: {:?}]",
+            "Publishing no-zero stable SHM sensor frame [topic: {}, sequence: {}]",
             topic.to_uri(false),
-            pose
+            sequence
         );
         transport
-            .send_uninit_loaned_payload_as::<StableContainerPayload<VehiclePose>, VehiclePose>(
+            .send_uninit_stable_payload_as::<NoZeroSensorFrame>(
                 UFrameMetadata::try_publish(topic.clone())?,
-                |slot| Ok(slot.write(pose)),
+                |frame| {
+                    frame
+                        .header(|header| {
+                            header
+                                .case_id(1)
+                                .sequence(sequence)
+                                .logical_payload_len(4096)
+                                .finish()
+                        })?
+                        .checksum(checksum)
+                        .payload_fill(0x5a)
+                        .finish()
+                },
             )
             .await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
