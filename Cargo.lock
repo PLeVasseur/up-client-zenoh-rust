@@ -3790,7 +3790,7 @@ dependencies = [
 [[package]]
 name = "up-rust"
 version = "0.11.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=3a277c0a2323376c43bf486297b6b1cdedda7a6d#3a277c0a2323376c43bf486297b6b1cdedda7a6d"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=2fe440f93cb66d6c7a24b953cc26fd5670a1ad71#2fe440f93cb66d6c7a24b953cc26fd5670a1ad71"
 dependencies = [
  "async-trait",
  "base64",
@@ -3804,6 +3804,9 @@ dependencies = [
  "protoc-bin-vendored",
  "rand 0.9.4",
  "regex",
+ "serde",
+ "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "up-rust-macros",
@@ -3814,7 +3817,7 @@ dependencies = [
 [[package]]
 name = "up-rust-macros"
 version = "0.11.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=3a277c0a2323376c43bf486297b6b1cdedda7a6d#3a277c0a2323376c43bf486297b6b1cdedda7a6d"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=2fe440f93cb66d6c7a24b953cc26fd5670a1ad71#2fe440f93cb66d6c7a24b953cc26fd5670a1ad71"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3832,8 +3835,6 @@ dependencies = [
  "clap",
  "criterion",
  "protobuf",
- "protobuf-codegen",
- "protoc-bin-vendored",
  "serde_json",
  "serial_test",
  "test-case",
