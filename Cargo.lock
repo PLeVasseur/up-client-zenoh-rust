@@ -3832,6 +3832,8 @@ dependencies = [
  "clap",
  "criterion",
  "protobuf",
+ "protobuf-codegen",
+ "protoc-bin-vendored",
  "serde_json",
  "serial_test",
  "test-case",

@@ -18,6 +18,8 @@
     clippy::too_many_lines
 )]
 
+#[cfg(feature = "payload-contract-benchmarks")]
+use std::mem;
 use std::{
     cmp,
     sync::Arc,
@@ -40,7 +42,34 @@ use up_rust::{
     UFrameBuilder, UFrameMetadata, UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport,
     UStatus, UUri, UUID,
 };
+#[cfg(feature = "payload-contract-benchmarks")]
+use up_rust::{
+    payload::{StablePayload, USerializer},
+    zero_copy::ULoanedContiguousZeroCopyRxFrame,
+    ProtobufPayload,
+};
 use up_transport_zenoh::{zenoh_config, UPTransportZenoh, ZenohRxFrame};
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[allow(
+    unknown_lints,
+    clippy::all,
+    unused_attributes,
+    dead_code,
+    missing_docs,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    trivial_casts,
+    unused_mut,
+    unused_results
+)]
+mod bench_payload_proto {
+    include!(concat!(env!("OUT_DIR"), "/bench_payload.rs"));
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+use bench_payload_proto::BenchPayload;
 
 const CORE_PAYLOAD_CASES: &[(&str, usize)] = &[
     ("empty_present", 0),
@@ -58,6 +87,146 @@ const LARGE_SENSOR_BENCH_TIMEOUT: Duration = Duration::from_secs(30);
 const ZENOH_SHM_SEGMENT_SIZE: usize = 64 * 1_024 * 1_024;
 const DIRECT_WRITE_CHUNK: usize = 8 * 1_024;
 const UUID_LSB_BASE: u64 = 0x8000_0000_0000_0000;
+#[cfg(feature = "payload-contract-benchmarks")]
+const PAYLOAD_CONTRACT_SEQUENCE: u32 = 1;
+#[cfg(feature = "payload-contract-benchmarks")]
+const PAYLOAD_CONTRACT_FILL_BYTE: u8 = 0x5a;
+#[cfg(feature = "payload-contract-benchmarks")]
+const PAYLOAD_CONTRACT_CORE_CASES: &[PayloadContractCase] = &[
+    PayloadContractCase::new(1, "can_classic_max", 8),
+    PayloadContractCase::new(2, "can_fd_max", 64),
+    PayloadContractCase::new(3, "someip_single_mtu", 1_456),
+    PayloadContractCase::new(4, "streamer_4k", 4 * 1_024),
+    PayloadContractCase::new(5, "radar_ars548_detection_list", 35_336),
+    PayloadContractCase::new(6, "streamer_64k", 64 * 1_024),
+];
+#[cfg(feature = "payload-contract-benchmarks")]
+const PAYLOAD_CONTRACT_LARGE_SENSOR_CASES: &[PayloadContractCase] = &[PayloadContractCase::new(
+    7,
+    "camera_8mp_3840x2160_raw12_packed",
+    12_441_600,
+)];
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[repr(C)]
+#[derive(up_rust::StablePayload, up_rust::ByteBackedStablePayload, up_rust::StablePayloadInit)]
+#[stable_payload(type_name = "org.eclipse.uprotocol.bench.StableBenchHeader")]
+struct StableBenchHeader {
+    case_id: u32,
+    sequence: u32,
+    logical_payload_len: u32,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+trait StableBenchPayloadView: StablePayload {
+    fn header(&self) -> &StableBenchHeader;
+    fn checksum(&self) -> u32;
+    fn payload(&self) -> &[u8];
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+macro_rules! define_stable_bench_payload {
+    ($name:ident, $type_name:literal, $payload_len:expr) => {
+        #[repr(C)]
+        #[derive(
+            up_rust::StablePayload, up_rust::ByteBackedStablePayload, up_rust::StablePayloadInit,
+        )]
+        #[stable_payload(type_name = $type_name)]
+        struct $name {
+            header: StableBenchHeader,
+            checksum: u32,
+            payload: [u8; $payload_len],
+        }
+
+        impl StableBenchPayloadView for $name {
+            fn header(&self) -> &StableBenchHeader {
+                &self.header
+            }
+
+            fn checksum(&self) -> u32 {
+                self.checksum
+            }
+
+            fn payload(&self) -> &[u8] {
+                &self.payload
+            }
+        }
+    };
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload8,
+    "org.eclipse.uprotocol.bench.StableBenchPayload8",
+    8
+);
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload64,
+    "org.eclipse.uprotocol.bench.StableBenchPayload64",
+    64
+);
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload1456,
+    "org.eclipse.uprotocol.bench.StableBenchPayload1456",
+    1_456
+);
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload4096,
+    "org.eclipse.uprotocol.bench.StableBenchPayload4096",
+    4 * 1_024
+);
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload35336,
+    "org.eclipse.uprotocol.bench.StableBenchPayload35336",
+    35_336
+);
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload65536,
+    "org.eclipse.uprotocol.bench.StableBenchPayload65536",
+    64 * 1_024
+);
+#[cfg(feature = "payload-contract-benchmarks")]
+define_stable_bench_payload!(
+    StableBenchPayload12441600,
+    "org.eclipse.uprotocol.bench.StableBenchPayload12441600",
+    12_441_600
+);
+
+#[derive(Clone, Copy)]
+enum BenchSuite {
+    Raw,
+    PayloadContract,
+    All,
+}
+
+impl BenchSuite {
+    fn from_env() -> Self {
+        match std::env::var("TRANSPORT_BENCH_SUITE")
+            .unwrap_or_else(|_| "raw".to_string())
+            .as_str()
+        {
+            "raw" => Self::Raw,
+            "payload-contract" => Self::PayloadContract,
+            "all" => Self::All,
+            other => panic!(
+                "TRANSPORT_BENCH_SUITE must be one of raw, payload-contract, all; got {other}"
+            ),
+        }
+    }
+
+    fn includes_raw(self) -> bool {
+        matches!(self, Self::Raw | Self::All)
+    }
+
+    fn includes_payload_contract(self) -> bool {
+        matches!(self, Self::PayloadContract | Self::All)
+    }
+}
 
 #[derive(Clone, Copy)]
 enum BenchProfile {
@@ -331,6 +500,55 @@ struct ReceivedAck {
     checksum: u64,
 }
 
+#[cfg(feature = "payload-contract-benchmarks")]
+#[derive(Clone, Copy)]
+struct PayloadContractCase {
+    case_id: u32,
+    payload_case_id: &'static str,
+    logical_payload_len: usize,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+impl PayloadContractCase {
+    const fn new(case_id: u32, payload_case_id: &'static str, logical_payload_len: usize) -> Self {
+        Self {
+            case_id,
+            payload_case_id,
+            logical_payload_len,
+        }
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[derive(Clone, Copy)]
+enum PayloadContractPath {
+    ProtobufOwnedFull,
+    StableZcNoZeroFull,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+impl PayloadContractPath {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ProtobufOwnedFull => "protobuf_owned_full",
+            Self::StableZcNoZeroFull => "stable_zc_nozero_full",
+        }
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+struct PayloadContractAck {
+    id: UUID,
+    message_type: UMessageType,
+    case_id: u32,
+    sequence: u32,
+    logical_payload_len: usize,
+    transported_payload_len: usize,
+    checksum: u32,
+    first_payload_byte: u8,
+    last_payload_byte: u8,
+}
+
 struct OwnedAckListener(mpsc::UnboundedSender<ReceivedAck>);
 
 #[async_trait]
@@ -364,6 +582,38 @@ impl UZeroCopyListener<ZenohRxFrame> for ZeroCopyAckListener {
                 checksum,
             })
             .expect("zero-copy benchmark receive channel should remain open");
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+struct ProtobufPayloadContractAckListener(mpsc::UnboundedSender<PayloadContractAck>);
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[async_trait]
+impl UOwnedListener for ProtobufPayloadContractAckListener {
+    async fn on_receive_owned(&self, frame: UOwnedFrame) {
+        self.0
+            .send(protobuf_payload_contract_ack(frame))
+            .expect("protobuf payload-contract benchmark receive channel should remain open");
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+struct StablePayloadContractAckListener {
+    tx: mpsc::UnboundedSender<PayloadContractAck>,
+    logical_payload_len: usize,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[async_trait]
+impl UZeroCopyListener<ZenohRxFrame> for StablePayloadContractAckListener {
+    async fn on_receive_zero_copy(&self, frame: ZenohRxFrame) {
+        self.tx
+            .send(stable_payload_contract_ack_for_len(
+                &frame,
+                self.logical_payload_len,
+            ))
+            .expect("stable payload-contract benchmark receive channel should remain open");
     }
 }
 
@@ -404,6 +654,37 @@ async fn register_listener(
             )
             .await
             .expect("owned benchmark listener should register");
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn register_payload_contract_listener(
+    transport: &Arc<UPTransportZenoh>,
+    path: PayloadContractPath,
+    case: &BenchCase,
+    contract: &PayloadContractCase,
+    tx: mpsc::UnboundedSender<PayloadContractAck>,
+) {
+    match path {
+        PayloadContractPath::ProtobufOwnedFull => transport
+            .register_owned_listener(
+                &case.source,
+                case.sink.as_ref(),
+                Arc::new(ProtobufPayloadContractAckListener(tx)),
+            )
+            .await
+            .expect("protobuf payload-contract benchmark listener should register"),
+        PayloadContractPath::StableZcNoZeroFull => transport
+            .register_zero_copy_listener(
+                &case.source,
+                case.sink.as_ref(),
+                Arc::new(StablePayloadContractAckListener {
+                    tx,
+                    logical_payload_len: contract.logical_payload_len,
+                }),
+            )
+            .await
+            .expect("stable payload-contract benchmark listener should register"),
     }
 }
 
@@ -483,6 +764,220 @@ async fn wait_for_ack(
     }
 }
 
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn send_payload_contract_path(
+    transport: &Arc<UPTransportZenoh>,
+    path: PayloadContractPath,
+    case: &BenchCase,
+    id: UUID,
+    contract: &PayloadContractCase,
+) -> Result<(), UStatus> {
+    match path {
+        PayloadContractPath::ProtobufOwnedFull => {
+            let payload = build_bench_payload(contract);
+            let metadata = case.builder(id).build_metadata().expect("valid metadata");
+            let frame = UOwnedFrame::from_serializable::<ProtobufPayload, _>(metadata, &payload)
+                .map_err(UStatus::from)?;
+            transport.send_owned(frame).await
+        }
+        PayloadContractPath::StableZcNoZeroFull => {
+            let metadata = case.builder(id).build_metadata().expect("valid metadata");
+            send_stable_payload_contract(transport, metadata, contract).await
+        }
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn send_stable_payload_contract(
+    transport: &Arc<UPTransportZenoh>,
+    metadata: UFrameMetadata,
+    contract: &PayloadContractCase,
+) -> Result<(), UStatus> {
+    macro_rules! send_stable {
+        ($payload_ty:ty) => {
+            transport
+                .send_uninit_stable_payload_as::<$payload_ty>(metadata, |payload| {
+                    payload
+                        .header(|header| {
+                            header
+                                .case_id(contract.case_id)
+                                .sequence(PAYLOAD_CONTRACT_SEQUENCE)
+                                .logical_payload_len(logical_payload_len_u32(contract))
+                                .finish()
+                        })?
+                        .checksum(payload_contract_checksum(contract))
+                        .payload_fill(PAYLOAD_CONTRACT_FILL_BYTE)
+                        .finish()
+                })
+                .await
+        };
+    }
+
+    match contract.logical_payload_len {
+        8 => send_stable!(StableBenchPayload8),
+        64 => send_stable!(StableBenchPayload64),
+        1_456 => send_stable!(StableBenchPayload1456),
+        4_096 => send_stable!(StableBenchPayload4096),
+        35_336 => send_stable!(StableBenchPayload35336),
+        65_536 => send_stable!(StableBenchPayload65536),
+        12_441_600 => send_stable!(StableBenchPayload12441600),
+        other => panic!("unsupported stable payload-contract size {other}"),
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn wait_for_payload_contract_ack(
+    rx: &mut mpsc::UnboundedReceiver<PayloadContractAck>,
+    expected_id: &UUID,
+    contract: &PayloadContractCase,
+    expected_transported_payload_len: usize,
+    timeout: Duration,
+) -> PayloadContractAck {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for matching Zenoh payload-contract frame"
+        );
+        let ack = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("timed out waiting for payload-contract benchmark receive")
+            .expect("payload-contract benchmark receive channel should remain open");
+        if &ack.id != expected_id {
+            continue;
+        }
+        assert_eq!(ack.message_type, UMessageType::Publish);
+        assert_eq!(ack.case_id, contract.case_id);
+        assert_eq!(ack.sequence, PAYLOAD_CONTRACT_SEQUENCE);
+        assert_eq!(ack.logical_payload_len, contract.logical_payload_len);
+        assert_eq!(
+            ack.transported_payload_len,
+            expected_transported_payload_len
+        );
+        assert_eq!(ack.checksum, payload_contract_checksum(contract));
+        assert_eq!(ack.first_payload_byte, PAYLOAD_CONTRACT_FILL_BYTE);
+        assert_eq!(ack.last_payload_byte, PAYLOAD_CONTRACT_FILL_BYTE);
+        return ack;
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn protobuf_payload_contract_ack(frame: UOwnedFrame) -> PayloadContractAck {
+    let transported_payload_len = frame.payload_bytes().len();
+    let id = frame.metadata().attributes().id().clone();
+    let message_type = frame.metadata().attributes().message_type();
+    let payload: BenchPayload = frame
+        .deserialize::<ProtobufPayload, _>()
+        .expect("protobuf payload-contract frame should deserialize");
+    PayloadContractAck {
+        id,
+        message_type,
+        case_id: payload.case_id,
+        sequence: payload.sequence,
+        logical_payload_len: usize::try_from(payload.logical_payload_len)
+            .expect("payload len fits usize"),
+        transported_payload_len,
+        checksum: payload.checksum,
+        first_payload_byte: *payload.payload.first().expect("payload is non-empty"),
+        last_payload_byte: *payload.payload.last().expect("payload is non-empty"),
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn stable_payload_contract_ack_for_len(
+    frame: &impl ULoanedContiguousZeroCopyRxFrame,
+    logical_payload_len: usize,
+) -> PayloadContractAck {
+    match logical_payload_len {
+        8 => stable_payload_contract_ack::<StableBenchPayload8>(frame),
+        64 => stable_payload_contract_ack::<StableBenchPayload64>(frame),
+        1_456 => stable_payload_contract_ack::<StableBenchPayload1456>(frame),
+        4_096 => stable_payload_contract_ack::<StableBenchPayload4096>(frame),
+        35_336 => stable_payload_contract_ack::<StableBenchPayload35336>(frame),
+        65_536 => stable_payload_contract_ack::<StableBenchPayload65536>(frame),
+        12_441_600 => stable_payload_contract_ack::<StableBenchPayload12441600>(frame),
+        other => panic!("unsupported stable payload-contract size {other}"),
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn stable_payload_contract_ack<T>(
+    frame: &impl ULoanedContiguousZeroCopyRxFrame,
+) -> PayloadContractAck
+where
+    T: StableBenchPayloadView,
+{
+    black_box(
+        frame
+            .payload_loan_provenance()
+            .expect("stable payload should be loan-backed"),
+    );
+    let payload = frame
+        .borrow_stable_payload::<T>()
+        .expect("stable payload-contract frame should borrow");
+    PayloadContractAck {
+        id: frame.metadata().attributes().id().clone(),
+        message_type: frame.metadata().attributes().message_type(),
+        case_id: payload.header().case_id,
+        sequence: payload.header().sequence,
+        logical_payload_len: usize::try_from(payload.header().logical_payload_len)
+            .expect("payload len fits usize"),
+        transported_payload_len: frame.payload_len(),
+        checksum: payload.checksum(),
+        first_payload_byte: *payload.payload().first().expect("payload is non-empty"),
+        last_payload_byte: *payload.payload().last().expect("payload is non-empty"),
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn payload_contract_transported_len(
+    path: PayloadContractPath,
+    contract: &PayloadContractCase,
+) -> usize {
+    match path {
+        PayloadContractPath::ProtobufOwnedFull => {
+            let payload = build_bench_payload(contract);
+            <BenchPayload as USerializer<ProtobufPayload>>::encoded_len(&payload)
+        }
+        PayloadContractPath::StableZcNoZeroFull => match contract.logical_payload_len {
+            8 => mem::size_of::<StableBenchPayload8>(),
+            64 => mem::size_of::<StableBenchPayload64>(),
+            1_456 => mem::size_of::<StableBenchPayload1456>(),
+            4_096 => mem::size_of::<StableBenchPayload4096>(),
+            35_336 => mem::size_of::<StableBenchPayload35336>(),
+            65_536 => mem::size_of::<StableBenchPayload65536>(),
+            12_441_600 => mem::size_of::<StableBenchPayload12441600>(),
+            other => panic!("unsupported stable payload-contract size {other}"),
+        },
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn build_bench_payload(contract: &PayloadContractCase) -> BenchPayload {
+    let mut payload = BenchPayload::new();
+    payload.case_id = contract.case_id;
+    payload.sequence = PAYLOAD_CONTRACT_SEQUENCE;
+    payload.logical_payload_len = logical_payload_len_u32(contract);
+    payload.checksum = payload_contract_checksum(contract);
+    payload.payload = vec![PAYLOAD_CONTRACT_FILL_BYTE; contract.logical_payload_len];
+    payload
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn logical_payload_len_u32(contract: &PayloadContractCase) -> u32 {
+    u32::try_from(contract.logical_payload_len).expect("payload len fits u32")
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn payload_contract_checksum(contract: &PayloadContractCase) -> u32 {
+    0xace0_0000
+        ^ contract.case_id
+        ^ PAYLOAD_CONTRACT_SEQUENCE
+        ^ logical_payload_len_u32(contract)
+        ^ u32::from(PAYLOAD_CONTRACT_FILL_BYTE)
+}
+
 fn loan_spec(
     metadata: UFrameMetadata,
     payload_len: usize,
@@ -554,6 +1049,75 @@ fn bench_payload_matrix(
                     );
                 }
             }
+        }
+    }
+    group.finish();
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn bench_payload_contract_matrix(
+    c: &mut Criterion,
+    group_name: &'static str,
+    payload_cases: &[PayloadContractCase],
+    timeout: Duration,
+) {
+    let runtime = Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group(group_name);
+    for contract in payload_cases {
+        for path in [
+            PayloadContractPath::ProtobufOwnedFull,
+            PayloadContractPath::StableZcNoZeroFull,
+        ] {
+            let case = BenchCase::new(
+                BenchMessageType::Publish,
+                contract.payload_case_id,
+                contract.logical_payload_len,
+            );
+            let transported_payload_len = payload_contract_transported_len(path, contract);
+            let transport = runtime.block_on(build_transport(&case.authority));
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            runtime.block_on(register_payload_contract_listener(
+                &transport, path, &case, contract, tx,
+            ));
+
+            group.bench_function(
+                BenchmarkId::new(
+                    path.label(),
+                    format!(
+                        "publish/{}/{}/{}",
+                        contract.payload_case_id,
+                        contract.logical_payload_len,
+                        transported_payload_len
+                    ),
+                ),
+                |b| {
+                    b.iter(|| {
+                        runtime.block_on(async {
+                            let id = next_uuid();
+                            send_payload_contract_path(
+                                &transport,
+                                path,
+                                &case,
+                                id.clone(),
+                                contract,
+                            )
+                            .await
+                            .expect("payload-contract benchmark send should succeed");
+                            let ack = wait_for_payload_contract_ack(
+                                &mut rx,
+                                &id,
+                                contract,
+                                transported_payload_len,
+                                timeout,
+                            )
+                            .await;
+                            black_box(ack.logical_payload_len);
+                            black_box(ack.transported_payload_len);
+                            black_box(ack.checksum);
+                        });
+                    });
+                },
+            );
         }
     }
     group.finish();
@@ -674,8 +1238,9 @@ fn bench_no_payload_smoke(c: &mut Criterion) {
 
 fn bench_transport(c: &mut Criterion) {
     UPTransportZenoh::try_init_log_from_env();
+    let suite = BenchSuite::from_env();
     let profile = BenchProfile::from_env();
-    if profile.includes_core() {
+    if suite.includes_raw() && profile.includes_core() {
         bench_payload_matrix(
             c,
             "transport_send_receive",
@@ -692,7 +1257,7 @@ fn bench_transport(c: &mut Criterion) {
         );
         bench_no_payload_smoke(c);
     }
-    if profile.includes_camera() {
+    if suite.includes_raw() && profile.includes_camera() {
         bench_payload_matrix(
             c,
             "transport_large_sensor_send_receive",
@@ -708,6 +1273,34 @@ fn bench_transport(c: &mut Criterion) {
             false,
         );
     }
+    if suite.includes_payload_contract() {
+        bench_payload_contract(c, profile);
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn bench_payload_contract(c: &mut Criterion, profile: BenchProfile) {
+    if profile.includes_core() {
+        bench_payload_contract_matrix(
+            c,
+            "transport_payload_contract_core",
+            PAYLOAD_CONTRACT_CORE_CASES,
+            BENCH_TIMEOUT,
+        );
+    }
+    if profile.includes_camera() {
+        bench_payload_contract_matrix(
+            c,
+            "transport_payload_contract_large_sensor",
+            PAYLOAD_CONTRACT_LARGE_SENSOR_CASES,
+            LARGE_SENSOR_BENCH_TIMEOUT,
+        );
+    }
+}
+
+#[cfg(not(feature = "payload-contract-benchmarks"))]
+fn bench_payload_contract(_c: &mut Criterion, _profile: BenchProfile) {
+    panic!("TRANSPORT_BENCH_SUITE=payload-contract requires feature payload-contract-benchmarks");
 }
 
 fn fill_pattern(dst: &mut [u8], start: usize) {

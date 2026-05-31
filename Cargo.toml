@@ -14,6 +14,7 @@
 [package]
 description = "Zenoh Rust Transport library implementation of the Eclipse uProtocol"
 edition = "2021"
+build = "build.rs"
 include = ["/src/*", "/examples/*", "/Cargo.toml", "/README.md", "/config/*"]
 keywords = ["uProtocol", "SDK", "communication", "Zenoh"]
 license = "Apache-2.0"
@@ -44,6 +45,7 @@ transmute_ptr_to_ref = "deny"
 
 [features]
 default = []
+payload-contract-benchmarks = ["dep:protobuf-codegen", "dep:protoc-bin-vendored"]
 zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
 
 [[example]]
@@ -68,6 +70,10 @@ tracing = "0.1.40"
 up-rust = { git = "https://github.com/PLeVasseur/up-rust.git", rev = "3a277c0a2323376c43bf486297b6b1cdedda7a6d", default-features = false }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
 zenoh = { version = "1.9.0" }
+
+[build-dependencies]
+protobuf-codegen = { version = "3.7.2", optional = true }
+protoc-bin-vendored = { version = "3.2.0", optional = true }
 
 [dev-dependencies]
 chrono = "0.4.44"
