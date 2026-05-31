@@ -1,0 +1,60 @@
+# ********************************************************************************
+#  Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+#  See the NOTICE file(s) distributed with this work for additional
+#  information regarding copyright ownership.
+#
+#  This program and the accompanying materials are made available under the
+#  terms of the Apache License Version 2.0 which is available at
+#  https://www.apache.org/licenses/LICENSE-2.0
+#
+#  SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************/
+
+name: Benchmark Guardrail Advisory
+
+on:
+  pull_request:
+    paths:
+      - "benches/**"
+      - "scripts/bench_transport_criterion.sh"
+      - "Cargo.*"
+      - ".github/workflows/benchmark-guardrail-advisory.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: ${{ vars.RUST_TOOLCHAIN || 'stable' }}
+  RUSTFLAGS: -Dwarnings
+  CARGO_TERM_COLOR: always
+  TRANSPORT_BENCH_PROFILE: core
+  CRITERION_ARGS: --sample-size 10 --warm-up-time 1 --measurement-time 2 --noise-threshold 0.05
+
+jobs:
+  zenoh-transport-benchmark-advisory:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Compile transport benchmark
+        run: cargo bench --features zero-copy --bench transport_criterion --no-run
+      - name: Run advisory smoke benchmark
+        run: scripts/bench_transport_criterion.sh candidate ci_smoke_zenoh
+      - name: Export advisory artifacts
+        if: always()
+        run: scripts/bench_transport_criterion.sh export
+      - name: Upload advisory artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenoh-transport-benchmark-advisory
+          path: target/transport-perf/zenoh
+          if-no-files-found: warn
