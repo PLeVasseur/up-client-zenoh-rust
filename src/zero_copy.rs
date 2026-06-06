@@ -11,24 +11,24 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use std::{mem::MaybeUninit, num::NonZeroUsize};
+use std::{mem::MaybeUninit, num::NonZeroUsize, sync::Arc};
 
 use async_trait::async_trait;
-use tracing::trace;
-#[cfg(test)]
-use up_rust_zc::UPayloadFormat;
+use tracing::{trace, warn};
 use up_rust_zc::{
-    PayloadEncoding, ProtobufMappable, UCode, UFrameMetadata, UPriority, UStatus, UTxBuffer,
-    UUninitTxBuffer, UVecRxLease, UZeroCopyTransportImpl, UZeroCopyUninitTransportImpl,
-    ValidatedTxLoanSpec,
+    LoanedPayload, PayloadEncoding, PayloadLoanProvenance, ProtobufMappable, UCode, UFrameMetadata,
+    UFrameView, ULoanedContiguousZeroCopyRxFrame, UPayloadFormat, UPriority, UStatus, UTxBuffer,
+    UUninitTxBuffer, UWireError, UZeroCopyListener, UZeroCopyRxLease, UZeroCopyTransportImpl,
+    UZeroCopyUninitTransportImpl, ValidatedTxLoanSpec,
 };
 use zenoh::{
-    bytes::ZBytes,
+    bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
+    sample::Sample,
     shm::{GarbageCollect, MemoryLayout, OwnedShmBuf, ZShmMut},
     Wait as _,
 };
 
-use crate::UPTransportZenoh;
+use crate::{listener_registry::ComparableZeroCopyListener, UPTransportZenoh};
 
 const FRAME_ATTACHMENT_MAGIC: &[u8; 4] = b"UFRM";
 
@@ -135,10 +135,95 @@ impl UUninitTxBuffer for ZenohUninitTxBuffer {
     }
 }
 
+/// Zenoh zero-copy receive lease used by the `zero-copy` feature.
+pub struct ZenohRxFrame {
+    metadata: UFrameMetadata,
+    sample: Sample,
+}
+
+impl ZenohRxFrame {
+    pub(crate) fn new(metadata: UFrameMetadata, sample: Sample) -> Self {
+        Self { metadata, sample }
+    }
+
+    /// Returns the underlying Zenoh sample for transport-specific diagnostics.
+    #[must_use]
+    pub fn sample(&self) -> &Sample {
+        &self.sample
+    }
+}
+
+impl UFrameView for ZenohRxFrame {
+    type PayloadReader<'a>
+        = ZBytesReader<'a>
+    where
+        Self: 'a;
+    type PayloadSlices<'a>
+        = ZBytesSliceIterator<'a>
+    where
+        Self: 'a;
+
+    fn metadata(&self) -> &UFrameMetadata {
+        &self.metadata
+    }
+
+    fn payload_len(&self) -> usize {
+        if self.metadata.payload_encoding().is_some() {
+            self.sample.payload().len()
+        } else {
+            0
+        }
+    }
+
+    fn payload_reader(&self) -> Self::PayloadReader<'_> {
+        self.sample.payload().reader()
+    }
+
+    fn payload_slices(&self) -> Self::PayloadSlices<'_> {
+        self.sample.payload().slices()
+    }
+
+    fn try_contiguous_payload(&self) -> Option<&[u8]> {
+        if self.metadata.payload_encoding().is_none() {
+            return Some(&[]);
+        }
+        let mut slices = self.sample.payload().slices();
+        let first = slices.next().unwrap_or_default();
+        if slices.next().is_none() {
+            Some(first)
+        } else {
+            None
+        }
+    }
+}
+
+impl UZeroCopyRxLease for ZenohRxFrame {}
+
+impl ULoanedContiguousZeroCopyRxFrame for ZenohRxFrame {
+    fn loaned_contiguous_payload(&self) -> Result<LoanedPayload<'_>, UWireError> {
+        if self.metadata.payload_encoding().is_none() || self.sample.payload().is_empty() {
+            return Err(UWireError::MissingPayload);
+        }
+        let shm = self.sample.payload().as_shm().ok_or_else(|| {
+            UWireError::invalid_payload("zero-copy Zenoh receive payload is not SHM-backed")
+        })?;
+        // SAFETY:
+        // - `as_shm()` succeeded, so Zenoh reports the payload is backed by a
+        //   shared-memory lease rather than a coalesced owned copy.
+        // - The slice is borrowed from `self.sample` and cannot outlive this RX
+        //   frame lease.
+        // - Phase 05F exposes opaque transport provenance; strict SHM admission
+        //   is enforced by this transport before constructing the loan view.
+        Ok(unsafe {
+            LoanedPayload::new_unchecked(shm.as_ref(), PayloadLoanProvenance::OpaqueTransportLoan)
+        })
+    }
+}
+
 #[async_trait]
 impl UZeroCopyTransportImpl for UPTransportZenoh {
     type Tx = ZenohTxBuffer;
-    type Rx = UVecRxLease;
+    type Rx = ZenohRxFrame;
 
     async fn loan_validated_tx(&self, spec: ValidatedTxLoanSpec) -> Result<Self::Tx, UStatus> {
         let metadata = spec.metadata().clone();
@@ -177,6 +262,82 @@ impl UZeroCopyTransportImpl for UPTransportZenoh {
                 )
             })?;
         Ok(())
+    }
+
+    async fn receive_validated_zero_copy(
+        &self,
+        source_filter: &up_rust_zc::UUri,
+        sink_filter: Option<&up_rust_zc::UUri>,
+    ) -> Result<Self::Rx, UStatus> {
+        let zenoh_key =
+            to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
+        let subscriber = self
+            .session
+            .declare_subscriber(&zenoh_key)
+            .await
+            .map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::Internal,
+                    format!("failed to declare Zenoh subscriber: {err}"),
+                )
+            })?;
+
+        loop {
+            let sample = subscriber.recv_async().await.map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::Internal,
+                    format!("failed to receive Zenoh sample: {err}"),
+                )
+            })?;
+            let Some(attachment) = sample.attachment() else {
+                warn!(
+                    "Ignoring Zenoh Sample without attachment [key expr: {}]",
+                    sample.key_expr()
+                );
+                continue;
+            };
+            let metadata = attachment_to_frame_metadata(attachment)?;
+            if metadata.payload_encoding().is_none() && !sample.payload().is_empty() {
+                return Err(UStatus::fail_with_code(
+                    UCode::InvalidArgument,
+                    "Zenoh sample has payload bytes but no payload encoding",
+                ));
+            }
+            if !sink_matches(metadata.attributes().sink(), sink_filter) {
+                continue;
+            }
+            ensure_strict_shm_payload(&metadata, &sample)?;
+            return Ok(ZenohRxFrame::new(metadata, sample));
+        }
+    }
+
+    async fn register_validated_zero_copy_listener(
+        &self,
+        source_filter: &up_rust_zc::UUri,
+        sink_filter: Option<&up_rust_zc::UUri>,
+        listener: Arc<dyn UZeroCopyListener<Self::Rx>>,
+    ) -> Result<(), UStatus> {
+        let zenoh_key =
+            to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
+        self.subscribers
+            .register_zero_copy_subscriber(zenoh_key, listener)
+            .await
+    }
+
+    async fn unregister_validated_zero_copy_listener(
+        &self,
+        source_filter: &up_rust_zc::UUri,
+        sink_filter: Option<&up_rust_zc::UUri>,
+        listener: Arc<dyn UZeroCopyListener<Self::Rx>>,
+    ) -> Result<(), UStatus> {
+        let zenoh_key =
+            to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
+        self.subscribers
+            .unregister_zero_copy(
+                zenoh_key.as_str(),
+                ComparableZeroCopyListener::new(listener),
+            )
+            .await
     }
 }
 
@@ -293,6 +454,26 @@ fn validate_alignment(alignment: usize) -> Result<(), UStatus> {
     Ok(())
 }
 
+fn sink_matches(actual: Option<&up_rust_zc::UUri>, filter: Option<&up_rust_zc::UUri>) -> bool {
+    filter.is_none_or(|filter| actual.is_some_and(|actual| filter.matches(actual)))
+}
+
+pub(crate) fn is_strict_shm_payload(metadata: &UFrameMetadata, sample: &Sample) -> bool {
+    metadata.payload_encoding().is_none()
+        || sample.payload().is_empty()
+        || sample.payload().as_shm().is_some()
+}
+
+fn ensure_strict_shm_payload(metadata: &UFrameMetadata, sample: &Sample) -> Result<(), UStatus> {
+    if is_strict_shm_payload(metadata, sample) {
+        return Ok(());
+    }
+    Err(UStatus::fail_with_code(
+        UCode::FailedPrecondition,
+        "zero-copy Zenoh receive requires SHM-backed payload bytes",
+    ))
+}
+
 fn align_len(payload_len: usize, alignment: usize) -> Result<usize, UStatus> {
     let remainder = payload_len % alignment;
     if remainder == 0 {
@@ -386,8 +567,7 @@ fn frame_to_attachment(metadata: &UFrameMetadata) -> Result<ZBytes, UStatus> {
     Ok(ZBytes::from(bytes))
 }
 
-#[cfg(test)]
-fn attachment_to_frame_metadata(attachment: &ZBytes) -> Result<UFrameMetadata, UStatus> {
+pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> Result<UFrameMetadata, UStatus> {
     let attachment_bytes = attachment.to_bytes();
     let mut bytes = attachment_bytes.as_ref();
     let version = take_u8(&mut bytes)?;
@@ -461,7 +641,6 @@ fn write_i32(dst: &mut Vec<u8>, value: i32) {
     dst.extend_from_slice(&value.to_le_bytes());
 }
 
-#[cfg(test)]
 fn take_u8(src: &mut &[u8]) -> Result<u8, UStatus> {
     let (value, remaining) = src
         .split_first()
@@ -470,7 +649,6 @@ fn take_u8(src: &mut &[u8]) -> Result<u8, UStatus> {
     Ok(*value)
 }
 
-#[cfg(test)]
 fn take_i32(src: &mut &[u8]) -> Result<i32, UStatus> {
     let bytes = take_bytes(src, 4)?;
     Ok(i32::from_le_bytes(bytes.try_into().map_err(|_| {
@@ -478,7 +656,6 @@ fn take_i32(src: &mut &[u8]) -> Result<i32, UStatus> {
     })?))
 }
 
-#[cfg(test)]
 fn take_len_bytes<'a>(src: &mut &'a [u8]) -> Result<&'a [u8], UStatus> {
     let len_bytes = take_bytes(src, 4)?;
     let len = u32::from_le_bytes(
@@ -494,7 +671,6 @@ fn take_len_bytes<'a>(src: &mut &'a [u8]) -> Result<&'a [u8], UStatus> {
     )
 }
 
-#[cfg(test)]
 fn take_string(src: &mut &[u8]) -> Result<String, UStatus> {
     String::from_utf8(take_len_bytes(src)?.to_vec()).map_err(|err| {
         UStatus::fail_with_code(
@@ -504,7 +680,6 @@ fn take_string(src: &mut &[u8]) -> Result<String, UStatus> {
     })
 }
 
-#[cfg(test)]
 fn take_bytes<'a>(src: &mut &'a [u8], len: usize) -> Result<&'a [u8], UStatus> {
     let value = src
         .get(..len)
@@ -517,6 +692,8 @@ fn take_bytes<'a>(src: &mut &'a [u8], len: usize) -> Result<&'a [u8], UStatus> {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, time::Duration};
+
     use bytes::Bytes;
     use up_rust_zc::{
         try_project_umessage_to_frame_metadata, UMessageBuilder, UPayloadFormat, UTxBuffer as _,
@@ -527,11 +704,32 @@ mod tests {
 
     use super::*;
 
+    type TestError = Box<dyn std::error::Error + Send + Sync>;
+
     fn payload_metadata(len: usize) -> UFrameMetadata {
-        let message = UMessageBuilder::publish(UUri::try_from("//vehicle/4210/1/8000").unwrap())
+        payload_metadata_for(UUri::try_from("//vehicle/4210/1/8000").unwrap(), len)
+    }
+
+    fn payload_metadata_for(source: UUri, len: usize) -> UFrameMetadata {
+        let message = UMessageBuilder::publish(source)
             .build_with_payload(Bytes::from(vec![0_u8; len]), UPayloadFormat::Raw)
             .expect("message");
         try_project_umessage_to_frame_metadata(&message).expect("metadata")
+    }
+
+    fn topic(authority: &str, resource: u16) -> UUri {
+        UUri::try_from_parts(authority, 0x4210, 1, resource).expect("topic")
+    }
+
+    async fn test_transport(authority: &str) -> UPTransportZenoh {
+        UPTransportZenoh::builder(authority)
+            .expect("builder")
+            .with_config(Config::default())
+            .with_shm_segment_size(1024 * 1024)
+            .expect("shm segment size")
+            .build()
+            .await
+            .expect("transport")
     }
 
     #[test]
@@ -597,5 +795,37 @@ mod tests {
 
         assert_eq!(buffer.metadata(), &metadata);
         assert_eq!(buffer.payload(), b"init");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn receive_zero_copy_rejects_non_shm_payload() -> Result<(), TestError> {
+        let authority = format!("zenoh-zc-rx-owned-{}", std::process::id());
+        let transport = Arc::new(test_transport(&authority).await);
+        let source = topic(&authority, 0x9301);
+        let receiver = transport.clone();
+        let receive_source = source.clone();
+        let receive_task =
+            tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let payload = b"copy";
+        let metadata = payload_metadata_for(source, payload.len());
+        let zenoh_key = to_zenoh_key_string(
+            metadata.attributes().source(),
+            metadata.attributes().sink(),
+            transport.local_authority.as_str(),
+        );
+        transport
+            .session
+            .put(&zenoh_key, ZBytes::from(payload.to_vec()))
+            .attachment(frame_to_attachment(&metadata)?)
+            .await?;
+
+        match tokio::time::timeout(Duration::from_secs(5), receive_task).await?? {
+            Ok(_) => panic!("strict zero-copy receive should reject non-SHM payloads"),
+            Err(error) => assert_eq!(error.get_code(), UCode::FailedPrecondition),
+        }
+        Ok(())
     }
 }

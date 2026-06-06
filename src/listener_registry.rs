@@ -12,6 +12,11 @@
  ********************************************************************************/
 
 use std::{collections::HashMap, sync::Arc};
+#[cfg(feature = "zero-copy")]
+use std::{
+    hash::{Hash, Hasher},
+    ops::Deref,
+};
 
 use protobuf::Message;
 use tokio::sync::Mutex;
@@ -19,7 +24,14 @@ use tracing::{debug, enabled, info, warn, Level};
 use up_rust::{
     ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage, UStatus,
 };
+#[cfg(feature = "zero-copy")]
+use up_rust_zc::{
+    validate_frame_view_for_transport, UCode as ZcUCode, UStatus as ZcUStatus, UZeroCopyListener,
+};
 use zenoh::{bytes::ZBytes, pubsub::Subscriber, sample::Sample, Session};
+
+#[cfg(feature = "zero-copy")]
+use crate::zero_copy::{attachment_to_frame_metadata, is_strict_shm_payload, ZenohRxFrame};
 
 fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes> {
     if attachment.len() < 2 {
@@ -50,9 +62,13 @@ fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes>
 
 // mapping of (Zenoh Key expression, Message Listener) ->  Zenoh Subscriber
 type SubscriberMap = Mutex<HashMap<(String, ComparableListener), Subscriber<()>>>;
+#[cfg(feature = "zero-copy")]
+type ZeroCopySubscriberMap = Mutex<HashMap<(String, ComparableZeroCopyListener), Subscriber<()>>>;
 
 pub(crate) struct ListenerRegistry {
     subscribers: SubscriberMap,
+    #[cfg(feature = "zero-copy")]
+    zero_copy_subscribers: ZeroCopySubscriberMap,
     session: Arc<Session>,
     max_subscribers: usize,
 }
@@ -68,6 +84,8 @@ impl ListenerRegistry {
     pub fn new(zenoh_session: Arc<Session>, max_subscribers: usize) -> Self {
         Self {
             subscribers: Mutex::new(HashMap::new()),
+            #[cfg(feature = "zero-copy")]
+            zero_copy_subscribers: Mutex::new(HashMap::new()),
             session: zenoh_session,
             max_subscribers,
         }
@@ -175,6 +193,88 @@ impl ListenerRegistry {
         }
     }
 
+    #[cfg(feature = "zero-copy")]
+    pub async fn register_zero_copy_subscriber(
+        &self,
+        zenoh_key: String,
+        listener: Arc<dyn UZeroCopyListener<ZenohRxFrame>>,
+    ) -> Result<(), ZcUStatus> {
+        let mut locked_subscribers = self.zero_copy_subscribers.lock().await;
+        let comparable_listener = ComparableZeroCopyListener::new(listener);
+
+        if locked_subscribers.contains_key(&(zenoh_key.clone(), comparable_listener.clone())) {
+            debug!("Zero-copy listener already registered");
+            return Ok(());
+        }
+        if locked_subscribers.len() >= self.max_subscribers {
+            return Err(ZcUStatus::fail_with_code(
+                ZcUCode::ResourceExhausted,
+                format!(
+                    "Maximum number of zero-copy listeners reached: {}",
+                    self.max_subscribers
+                ),
+            ));
+        }
+
+        let listener_to_invoke_in_callback = comparable_listener.clone();
+        let callback = move |sample: Sample| {
+            let listener_cloned = listener_to_invoke_in_callback.clone();
+            let Some(attachment) = sample.attachment() else {
+                warn!(
+                    "Ignoring Zenoh Sample without attachment [key expr: {}]",
+                    sample.key_expr()
+                );
+                return;
+            };
+            let metadata = match attachment_to_frame_metadata(attachment) {
+                Ok(metadata) => metadata,
+                Err(e) => {
+                    warn!("Unable to transform attachment to valid UFrameMetadata: {e:?}");
+                    return;
+                }
+            };
+            if metadata.payload_encoding().is_none() && !sample.payload().is_empty() {
+                warn!(
+                    "Ignoring Zenoh Sample with payload bytes but no payload encoding [key expr: {}]",
+                    sample.key_expr()
+                );
+                return;
+            }
+            if !is_strict_shm_payload(&metadata, &sample) {
+                warn!(
+                    "Dropping non-SHM Zenoh payload on strict zero-copy listener path [key expr: {}]",
+                    sample.key_expr()
+                );
+                return;
+            }
+            let frame = ZenohRxFrame::new(metadata, sample);
+            if validate_frame_view_for_transport(&frame).is_err() {
+                warn!("Ignoring Zenoh Sample with invalid zero-copy frame metadata");
+                return;
+            }
+            tokio::spawn(async move {
+                listener_cloned.on_receive_zero_copy(frame).await;
+            });
+        };
+
+        match self
+            .session
+            .declare_subscriber(&zenoh_key)
+            .callback_mut(callback)
+            .await
+        {
+            Ok(subscriber) => {
+                locked_subscribers.insert((zenoh_key, comparable_listener), subscriber);
+                Ok(())
+            }
+            Err(e) => {
+                let msg = "Failed to register zero-copy listener";
+                warn!("{msg}: {e}");
+                Err(ZcUStatus::fail_with_code(ZcUCode::Internal, msg))
+            }
+        }
+    }
+
     pub async fn unregister(
         &self,
         key_expr: &str,
@@ -198,6 +298,79 @@ impl ListenerRegistry {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "zero-copy")]
+    pub async fn unregister_zero_copy(
+        &self,
+        key_expr: &str,
+        listener: ComparableZeroCopyListener,
+    ) -> Result<(), ZcUStatus> {
+        if self
+            .zero_copy_subscribers
+            .lock()
+            .await
+            .remove(&(key_expr.to_string(), listener.clone()))
+            .is_none()
+        {
+            return Err(ZcUStatus::fail_with_code(
+                ZcUCode::NotFound,
+                format!("No such zero-copy listener registered for key expression: {key_expr}"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "zero-copy")]
+#[derive(Clone)]
+pub(crate) struct ComparableZeroCopyListener {
+    listener: Arc<dyn UZeroCopyListener<ZenohRxFrame>>,
+}
+
+#[cfg(feature = "zero-copy")]
+impl ComparableZeroCopyListener {
+    pub fn new(listener: Arc<dyn UZeroCopyListener<ZenohRxFrame>>) -> Self {
+        Self { listener }
+    }
+
+    fn pointer_address(&self) -> usize {
+        let ptr = Arc::as_ptr(&self.listener);
+        let thin_ptr = ptr.cast::<()>();
+        thin_ptr as usize
+    }
+}
+
+#[cfg(feature = "zero-copy")]
+impl Deref for ComparableZeroCopyListener {
+    type Target = dyn UZeroCopyListener<ZenohRxFrame>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.listener
+    }
+}
+
+#[cfg(feature = "zero-copy")]
+impl Hash for ComparableZeroCopyListener {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.pointer_address().hash(state);
+    }
+}
+
+#[cfg(feature = "zero-copy")]
+impl PartialEq for ComparableZeroCopyListener {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.listener, &other.listener)
+    }
+}
+
+#[cfg(feature = "zero-copy")]
+impl Eq for ComparableZeroCopyListener {}
+
+#[cfg(feature = "zero-copy")]
+impl std::fmt::Debug for ComparableZeroCopyListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ComparableZeroCopyListener: {}", self.pointer_address())
     }
 }
 

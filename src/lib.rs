@@ -47,7 +47,7 @@ use zenoh::{Config, Session};
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
 #[cfg(feature = "zero-copy")]
-pub use zero_copy::{ZenohTxBuffer, ZenohUninitTxBuffer};
+pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
