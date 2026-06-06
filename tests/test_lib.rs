@@ -27,7 +27,7 @@ pub async fn create_up_transport_zenoh(
     config: Option<zenoh::config::Config>,
 ) -> Result<UPTransportZenoh, UStatus> {
     let builder = UPTransportZenoh::builder(local_authority_name).map_err(|e| {
-        UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid URI: {e}"))
+        UStatus::fail_with_code(UCode::InvalidArgument, format!("Invalid URI: {e}"))
     })?;
     builder
         .with_config(config.unwrap_or_default())

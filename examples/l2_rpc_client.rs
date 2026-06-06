@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol RPC client example");
-    let uri_provider = Arc::new(StaticUriProvider::new("l2_rpc_client", 0x10_ab10, 1));
+    let uri_provider = Arc::new(StaticUriProvider::new("l2_rpc_client", 0x10_ab10, 1)?);
     let transport = UPTransportZenoh::builder(uri_provider.get_authority())
         .expect("invalid authority name")
         .with_config(common::get_zenoh_config())
@@ -48,12 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operation_uuri = UUri::from_str("//rpc_server/AAA/1/6A10")?;
 
     // create and send request
-    let payload = UPayload::new("GetCurrentTime", UPayloadFormat::UPAYLOAD_FORMAT_TEXT);
+    let payload = UPayload::new("GetCurrentTime", UPayloadFormat::Text);
     let call_options = CallOptions::for_rpc_request(
         5_000,
         Some(UUID::build()),
         Some("my_token".to_string()),
-        Some(UPriority::UPRIORITY_CS6),
+        Some(UPriority::CS6),
     );
     println!(
         "Sending request [source: {}, sink: {}]",
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Failed to receive reply from service");
         }
         Ok(Some(payload)) => {
-            let value = String::from_utf8(payload.payload().to_vec())?;
+            let value = String::from_utf8(payload.payload().clone())?;
             println!("Received reply [payload: {value}]");
         }
         _ => {

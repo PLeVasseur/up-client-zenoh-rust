@@ -18,15 +18,18 @@ use std::{
     ops::Deref,
 };
 
-use protobuf::Message;
 use tokio::sync::Mutex;
 use tracing::{debug, enabled, info, warn, Level};
-use up_rust::{
-    ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage, UStatus,
+use up_rust::up_core_api::{
+    uattributes::UAttributes as UAttributesProto, umessage::UMessage as UMessageProto,
 };
 #[cfg(feature = "zero-copy")]
-use up_rust_zc::{
+use up_rust::{
     validate_frame_view_for_transport, UCode as ZcUCode, UStatus as ZcUStatus, UZeroCopyListener,
+};
+use up_rust::{
+    ComparableListener, ProtobufMappable, UAttributes, UAttributesValidators, UCode, UListener,
+    UMessage, UStatus,
 };
 use zenoh::{bytes::ZBytes, pubsub::Subscriber, sample::Sample, Session};
 
@@ -36,7 +39,7 @@ use crate::zero_copy::{attachment_to_frame_metadata, is_strict_shm_payload, Zeno
 fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes> {
     if attachment.len() < 2 {
         return Err(UStatus::fail_with_code(
-            UCode::INVALID_ARGUMENT,
+            UCode::InvalidArgument,
             "message has no/invalid attachment",
         )
         .into());
@@ -51,10 +54,10 @@ fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes>
             ver
         );
         info!("{msg}");
-        return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg).into());
+        return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
     }
     // Get the attributes
-    let uattributes = UAttributes::parse_from_bytes(&attachment_bytes[1..])?;
+    let uattributes = UAttributes::parse_from_protobuf_bytes(&attachment_bytes[1..])?;
     // [impl->dsn~utransport-registerlistener-discard-invalid-messages~1]
     let validator = UAttributesValidators::get_validator_for_attributes(&uattributes);
     Ok(validator.validate(&uattributes).map(|()| uattributes)?)
@@ -108,7 +111,7 @@ impl ListenerRegistry {
         // [impl->dsn~utransport-registerlistener-error-resource-exhausted~1]
         if locked_subscribers.len() >= self.max_subscribers {
             return Err(UStatus::fail_with_code(
-                UCode::RESOURCE_EXHAUSTED,
+                UCode::ResourceExhausted,
                 format!(
                     "Maximum number of listeners reached: {}",
                     self.max_subscribers
@@ -140,11 +143,17 @@ impl ListenerRegistry {
             // [impl->dsn~up-attributes-ttl~1]
             // [impl->dsn~up-attributes-ttl-timeout~1]
             if attributes.check_expired().is_ok() {
-                // Create UMessage
-                let msg = UMessage {
-                    attributes: Some(attributes).into(),
+                let msg_proto = UMessageProto {
+                    attributes: Some(UAttributesProto::from(&attributes)).into(),
                     payload: Some(sample.payload().to_bytes().to_vec().into()),
                     ..Default::default()
+                };
+                let msg = match UMessage::try_from(&msg_proto) {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        warn!("Unable to create UMessage from Zenoh sample: {err}");
+                        return;
+                    }
                 };
                 // Note that we are invoking the listener in a dedicated task
                 // to avoid blocking the Zenoh callback thread
@@ -159,13 +168,13 @@ impl ListenerRegistry {
                     listener_cloned.on_receive(msg).await;
                 });
             } else if enabled!(Level::DEBUG) {
-                if let Some(id) = attributes.id.as_ref() {
-                    if let (Some(ts), Some(ttl)) = (id.get_time(), attributes.ttl) {
-                        debug!(
-                            "discarding expired message [id: {}, created: {ts}, ttl: {ttl}]",
-                            id.to_hyphenated_string(),
-                        );
-                    }
+                let id = attributes.id();
+                if let Some(ttl) = attributes.ttl() {
+                    let ts = id.get_time();
+                    debug!(
+                        "discarding expired message [id: {}, created: {ts}, ttl: {ttl}]",
+                        id.to_hyphenated_string(),
+                    );
                 }
             }
         };
@@ -188,7 +197,7 @@ impl ListenerRegistry {
             Err(e) => {
                 let msg = "Failed to register listener";
                 warn!("{msg}: {e}");
-                Err(UStatus::fail_with_code(UCode::INTERNAL, msg))
+                Err(UStatus::fail_with_code(UCode::Internal, msg))
             }
         }
     }
@@ -293,7 +302,7 @@ impl ListenerRegistry {
         {
             // [impl->dsn~utransport-unregisterlistener-error-notfound~1]
             return Err(UStatus::fail_with_code(
-                UCode::NOT_FOUND,
+                UCode::NotFound,
                 format!("No such listener registered for key expression: {key_expr}"),
             ));
         }
@@ -378,7 +387,7 @@ impl std::fmt::Debug for ComparableZeroCopyListener {
 mod tests {
 
     use super::*;
-    use up_rust::{MockUListener, UMessageType, UUri, UUID};
+    use up_rust::{MockUListener, UMessageBuilder, UUri};
 
     #[tokio::test(flavor = "multi_thread")]
     // [utest->dsn~utransport-registerlistener-idempotent~1]
@@ -406,31 +415,33 @@ mod tests {
         }
     }
 
-    #[test_case::test_case(
-        UAttributes {
-            type_: UMessageType::UMESSAGE_TYPE_PUBLISH.into(),
-            id: Some(UUID::build()).into(),
-            source: Some(UUri::try_from_parts("source", 0xAA1, 0x01, 0x9000).expect("failed to create source")).into(),
-            ..Default::default()
-        } => true;
-        "valid PUBLISH attributes"
-    )]
-    #[test_case::test_case(
-        UAttributes {
-            type_: UMessageType::UMESSAGE_TYPE_PUBLISH.into(),
-            id: Some(UUID::build()).into(),
-            // source is missing
-            ..Default::default()
-        } => false;
-        "invalid PUBLISH attributes"
-    )]
     #[tokio::test(flavor = "multi_thread")]
     // [utest->dsn~utransport-registerlistener-discard-invalid-messages~1]
-    async fn test_attachment_to_uattributes_fails_for_invalid_attributes(
-        attribs: UAttributes,
-    ) -> bool {
-        let attachment = crate::utransport::uattributes_to_attachment(&attribs)
-            .expect("failed to create attachment from invalid UAttributes");
-        attachment_to_uattributes(&attachment).is_ok()
+    async fn test_attachment_to_uattributes_accepts_valid_attributes() {
+        let message = UMessageBuilder::publish(
+            UUri::try_from_parts("source", 0xAA1, 0x01, 0x9000).expect("failed to create source"),
+        )
+        .build()
+        .expect("failed to create message");
+        let attribs = message.attributes();
+        let attachment = crate::utransport::uattributes_to_attachment(attribs)
+            .expect("failed to create attachment from UAttributes");
+        assert!(attachment_to_uattributes(&attachment).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // [utest->dsn~utransport-registerlistener-discard-invalid-messages~1]
+    async fn test_attachment_to_uattributes_rejects_invalid_version() {
+        let message = UMessageBuilder::publish(
+            UUri::try_from_parts("source", 0xAA1, 0x01, 0x9000).expect("failed to create source"),
+        )
+        .build()
+        .expect("failed to create message");
+        let attachment = crate::utransport::uattributes_to_attachment(message.attributes())
+            .expect("failed to create attachment from UAttributes");
+        let mut attachment_bytes = attachment.to_bytes().to_vec();
+        attachment_bytes[0] = crate::UPROTOCOL_MAJOR_VERSION + 1;
+
+        assert!(attachment_to_uattributes(&ZBytes::from(attachment_bytes)).is_err());
     }
 }

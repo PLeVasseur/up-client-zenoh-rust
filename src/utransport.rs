@@ -13,12 +13,11 @@
 use crate::UPTransportZenoh;
 use async_trait::async_trait;
 use bytes::Bytes;
-use protobuf::Message;
 use std::sync::Arc;
 use tracing::{debug, error, trace};
 use up_rust::{
-    ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage, UPriority,
-    UStatus, UTransport, UUri,
+    ComparableListener, ProtobufMappable, UAttributes, UAttributesValidators, UCode, UListener,
+    UMessage, UPriority, UStatus, UTransport, UUri,
 };
 use zenoh::{bytes::ZBytes, qos::Priority};
 
@@ -28,35 +27,35 @@ pub(crate) fn uattributes_to_attachment(uattributes: &UAttributes) -> anyhow::Re
     writer.append(ZBytes::from(
         crate::UPROTOCOL_MAJOR_VERSION.to_le_bytes().to_vec(),
     ));
-    writer.append(ZBytes::from(uattributes.write_to_bytes()?));
+    writer.append(ZBytes::from(uattributes.write_to_protobuf_bytes()?));
     let zbytes = writer.finish();
     Ok(zbytes)
 }
 
 // [impl->dsn~up-transport-zenoh-message-priority-mapping~1]
 #[allow(clippy::match_same_arms)]
-fn map_zenoh_priority(upriority: UPriority) -> Priority {
+fn map_zenoh_priority(upriority: Option<UPriority>) -> Priority {
     match upriority {
-        UPriority::UPRIORITY_CS0 => Priority::Background,
-        UPriority::UPRIORITY_CS1 => Priority::DataLow,
-        UPriority::UPRIORITY_CS2 => Priority::Data,
-        UPriority::UPRIORITY_CS3 => Priority::DataHigh,
-        UPriority::UPRIORITY_CS4 => Priority::InteractiveLow,
-        UPriority::UPRIORITY_CS5 => Priority::InteractiveHigh,
-        UPriority::UPRIORITY_CS6 => Priority::RealTime,
+        Some(UPriority::CS0) => Priority::Background,
+        Some(UPriority::CS1) => Priority::DataLow,
+        Some(UPriority::CS2) => Priority::Data,
+        Some(UPriority::CS3) => Priority::DataHigh,
+        Some(UPriority::CS4) => Priority::InteractiveLow,
+        Some(UPriority::CS5) => Priority::InteractiveHigh,
+        Some(UPriority::CS6) => Priority::RealTime,
         // If uProtocol priority isn't specified, use CS1(DataLow) by default.
         // [impl->dsn~up-attributes-priority~1]
-        UPriority::UPRIORITY_UNSPECIFIED => Priority::DataLow,
+        None => Priority::DataLow,
     }
 }
 
 // [impl->dsn~up-transport-zenoh-key-expr~1]
 fn uri_to_zenoh_key(uri: &UUri, fallback_authority: &str) -> String {
     // authority_name
-    let authority = if uri.authority_name.is_empty() {
+    let authority = if uri.authority_name().is_empty() {
         fallback_authority.to_string()
     } else {
-        uri.authority_name()
+        uri.authority_name().to_string()
     };
     // ue_type
     let ue_type = if uri.has_wildcard_entity_type() {
@@ -108,12 +107,12 @@ impl UPTransportZenoh {
         let attachment = uattributes_to_attachment(attributes).map_err(|e| {
             let msg = format!("Unable to transform UAttributes to attachment: {e}");
             error!("{msg}");
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg)
+            UStatus::fail_with_code(UCode::InvalidArgument, msg)
         })?;
 
         // Map the priority to Zenoh
         // [impl->dsn~up-transport-zenoh-message-priority-mapping~1]
-        let priority = map_zenoh_priority(attributes.priority.enum_value_or_default());
+        let priority = map_zenoh_priority(attributes.priority());
 
         // Send data
         self.session
@@ -128,7 +127,7 @@ impl UPTransportZenoh {
             .inspect(|()| trace!("putting message with key: {zenoh_key}"))
             .map_err(|e| {
                 UStatus::fail_with_code(
-                    UCode::INTERNAL,
+                    UCode::Internal,
                     format!("failed to put Zenoh message: {e}"),
                 )
             })?;
@@ -146,17 +145,13 @@ impl UTransport for UPTransportZenoh {
     ) -> Result<UMessage, UStatus> {
         // [impl->dsn~utransport-receive-error-unimplemented~1]
         Err(UStatus::fail_with_code(
-            UCode::UNIMPLEMENTED,
+            UCode::Unimplemented,
             "not implemented",
         ))
     }
 
     async fn send(&self, message: UMessage) -> Result<(), UStatus> {
-        let attribs = message.attributes.as_ref().ok_or_else(|| {
-            let msg = "Message has no attributes".to_string();
-            debug!("{msg}");
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg)
-        })?;
+        let attribs = message.attributes();
 
         // [impl->dsn~utransport-send-error-invalid-parameter~1]
         UAttributesValidators::get_validator_for_attributes(attribs)
@@ -164,23 +159,21 @@ impl UTransport for UPTransportZenoh {
             .map_err(|e| {
                 let msg = e.to_string();
                 debug!("{msg}");
-                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg)
+                UStatus::fail_with_code(UCode::InvalidArgument, msg)
             })?;
 
         // Get Zenoh key
         // [impl->dsn~up-transport-zenoh-key-expr~1]
         let zenoh_key = to_zenoh_key_string(
-            attribs.source.get_or_default(),
-            attribs.sink.as_ref(),
+            attribs.source(),
+            attribs.sink(),
             self.local_authority.as_str(),
         );
 
         // Get payload
-        let payload = if let Some(payload) = message.payload {
-            payload
-        } else {
-            Bytes::new()
-        };
+        let payload = message
+            .payload()
+            .map_or_else(Bytes::new, Bytes::copy_from_slice);
 
         self.put_message(&zenoh_key, payload, attribs).await
     }
@@ -193,7 +186,7 @@ impl UTransport for UPTransportZenoh {
     ) -> Result<(), UStatus> {
         // [impl->dsn~utransport-registerlistener-error-unimplemented~1]
         // [impl->dsn~utransport-registerlistener-error-invalid-parameter~1]
-        up_rust::verify_filter_criteria(source_filter, sink_filter)?;
+        up_rust::verify_filter_criteria(source_filter, sink_filter).map_err(|err| *err)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -209,7 +202,7 @@ impl UTransport for UPTransportZenoh {
     ) -> Result<(), UStatus> {
         // [impl->dsn~utransport-unregisterlistener-error-unimplemented~1]
         // [impl->dsn~utransport-unregisterlistener-error-invalid-parameter~1]
-        up_rust::verify_filter_criteria(source_filter, sink_filter)?;
+        up_rust::verify_filter_criteria(source_filter, sink_filter).map_err(|err| *err)?;
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
         self.subscribers
@@ -224,7 +217,7 @@ mod tests {
 
     use super::*;
     use test_case::test_case;
-    use up_rust::{MockUListener, UCode, UMessageBuilder, UMessageType, UUri};
+    use up_rust::{MockUListener, UCode, UMessageBuilder, UUri};
     use zenoh::Config;
 
     #[test]
@@ -235,7 +228,7 @@ mod tests {
         )
         .build()
         .expect("failed to create message");
-        let attributes = msg.attributes.as_ref().expect("message has no attributes");
+        let attributes = msg.attributes();
         let attachment =
             uattributes_to_attachment(attributes).expect("failed to create attachment");
 
@@ -243,30 +236,32 @@ mod tests {
         let attachment_bytes = attachment.to_bytes();
         let ver = attachment_bytes[0];
         assert!(ver == crate::UPROTOCOL_MAJOR_VERSION);
-        assert!(UAttributes::parse_from_bytes(&attachment_bytes[1..])
-            .is_ok_and(|deserialized_attributes| &deserialized_attributes == attributes));
+        assert!(
+            UAttributes::parse_from_protobuf_bytes(&attachment_bytes[1..])
+                .is_ok_and(|deserialized_attributes| &deserialized_attributes == attributes)
+        );
     }
 
-    #[test_case(UPriority::UPRIORITY_CS0, Priority::Background; "for CS0")]
-    #[test_case(UPriority::UPRIORITY_CS1, Priority::DataLow; "for CS1")]
-    #[test_case(UPriority::UPRIORITY_CS2, Priority::Data; "for CS2")]
-    #[test_case(UPriority::UPRIORITY_CS3, Priority::DataHigh; "for CS3")]
-    #[test_case(UPriority::UPRIORITY_CS4, Priority::InteractiveLow; "for CS4")]
-    #[test_case(UPriority::UPRIORITY_CS5, Priority::InteractiveHigh; "for CS5")]
-    #[test_case(UPriority::UPRIORITY_CS6, Priority::RealTime; "for CS6")]
-    #[test_case(UPriority::UPRIORITY_UNSPECIFIED, Priority::DataLow; "for UNSPECIFIED")]
+    #[test_case(Some(UPriority::CS0), Priority::Background; "for CS0")]
+    #[test_case(Some(UPriority::CS1), Priority::DataLow; "for CS1")]
+    #[test_case(Some(UPriority::CS2), Priority::Data; "for CS2")]
+    #[test_case(Some(UPriority::CS3), Priority::DataHigh; "for CS3")]
+    #[test_case(Some(UPriority::CS4), Priority::InteractiveLow; "for CS4")]
+    #[test_case(Some(UPriority::CS5), Priority::InteractiveHigh; "for CS5")]
+    #[test_case(Some(UPriority::CS6), Priority::RealTime; "for CS6")]
+    #[test_case(None, Priority::DataLow; "for unspecified")]
     // [utest->dsn~up-transport-zenoh-message-priority-mapping~1]
-    fn test_map_zenoh_priority(prio: UPriority, expected_zenoh_prio: Priority) {
+    fn test_map_zenoh_priority(prio: Option<UPriority>, expected_zenoh_prio: Priority) {
         assert_eq!(map_zenoh_priority(prio), expected_zenoh_prio);
     }
 
     #[test]
     // [utest->dsn~up-attributes-priority~1]
     fn test_map_zenoh_priority_applies_default_priority() {
-        let default_zenoh_priority = map_zenoh_priority(UPriority::UPRIORITY_UNSPECIFIED);
+        let default_zenoh_priority = map_zenoh_priority(None);
         assert_eq!(
             default_zenoh_priority,
-            map_zenoh_priority(UPriority::UPRIORITY_CS1)
+            map_zenoh_priority(Some(UPriority::CS1))
         );
     }
 
@@ -323,7 +318,7 @@ mod tests {
         assert!(up_transport_zenoh
             .receive(&source_filter, None)
             .await
-            .is_err_and(|err| matches!(err.get_code(), UCode::UNIMPLEMENTED)));
+            .is_err_and(|err| matches!(err.get_code(), UCode::Unimplemented)));
     }
 
     #[test_case(
@@ -364,11 +359,11 @@ mod tests {
                 Arc::new(MockUListener::new())
             )
             .await
-            .is_err_and(|err| matches!(err.get_code(), UCode::INVALID_ARGUMENT)));
+            .is_err_and(|err| matches!(err.get_code(), UCode::InvalidArgument)));
         assert!(up_transport_zenoh
             .unregister_listener(&source_filter, None, Arc::new(MockUListener::new()))
             .await
-            .is_err_and(|err| matches!(err.get_code(), UCode::INVALID_ARGUMENT)));
+            .is_err_and(|err| matches!(err.get_code(), UCode::InvalidArgument)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -396,7 +391,7 @@ mod tests {
         assert!(up_transport_zenoh
             .register_listener(&source_filter, None, Arc::new(MockUListener::new()))
             .await
-            .is_err_and(|err| matches!(err.get_code(), UCode::RESOURCE_EXHAUSTED)));
+            .is_err_and(|err| matches!(err.get_code(), UCode::ResourceExhausted)));
     }
 
     #[test_case("//src/1/1/8000", None; "Listen to Publish")]
@@ -453,39 +448,28 @@ mod tests {
             up_transport_zenoh
                 .unregister_listener(&source_filter, sink_filter.as_ref(), foo_listener.clone())
                 .await
-                .is_err_and(|err| matches!(err.get_code(), UCode::NOT_FOUND)),
+                .is_err_and(|err| matches!(err.get_code(), UCode::NotFound)),
             "Expected unregister to fail after already being unregistered"
         );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     // [utest->dsn~utransport-send-error-invalid-parameter~1]
-    async fn test_send_fails_for_invalid_attributes() {
-        let up_transport_zenoh = UPTransportZenoh::builder("vehicle2")
-            .expect("invalid authority name")
-            .with_config(Config::default())
-            .build()
-            .await
-            .expect("failed to create transport");
-        // invalid notification message, lacking sink address
-        let message = UMessage {
-            attributes: Some(UAttributes {
-                type_: UMessageType::UMESSAGE_TYPE_NOTIFICATION.into(),
-                source: Some(
-                    UUri::try_from_parts("vehicle1", 0xAACC, 0x01, 0x1)
-                        .expect("failed to create source filter"),
-                )
-                .into(),
+    async fn test_invalid_notification_attributes_cannot_build_message() {
+        let source = UUri::try_from_parts("vehicle1", 0xAACC, 0x01, 0x1)
+            .expect("failed to create source filter");
+        let invalid_proto = up_rust::up_core_api::umessage::UMessage {
+            attributes: Some(up_rust::up_core_api::uattributes::UAttributes {
+                type_: up_rust::up_core_api::uattributes::UMessageType::UMESSAGE_TYPE_NOTIFICATION
+                    .into(),
+                source: Some(up_rust::up_core_api::uri::UUri::from(&source)).into(),
                 sink: None.into(),
                 ..Default::default()
             })
             .into(),
-            payload: None,
             ..Default::default()
         };
-        assert!(up_transport_zenoh
-            .send(message)
-            .await
-            .is_err_and(|err| matches!(err.get_code(), UCode::INVALID_ARGUMENT)));
+
+        assert!(UMessage::try_from(&invalid_proto).is_err());
     }
 }

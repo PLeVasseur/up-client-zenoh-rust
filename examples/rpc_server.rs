@@ -35,12 +35,13 @@ struct RpcListener(Arc<UPTransportZenoh>);
 #[async_trait]
 impl UListener for RpcListener {
     async fn on_receive(&self, msg: UMessage) {
-        if let (Some(attributes), Some(payload)) = (msg.attributes.as_ref(), msg.payload) {
+        if let Some(payload) = msg.payload() {
+            let attributes = msg.attributes();
             let request_value = String::from_utf8(payload.to_vec()).unwrap_or("N/A".to_string());
             println!(
                 "Processing request [from: {}, to: {}, payload: {request_value}]",
-                attributes.source.to_uri(false),
-                attributes.sink.to_uri(false)
+                attributes.source().to_uri(false),
+                attributes.sink_unchecked().to_uri(false)
             );
 
             // Send back result
@@ -48,7 +49,7 @@ impl UListener for RpcListener {
                 .build_with_payload(
                     // Get current time
                     format!("{}", Utc::now()),
-                    UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
+                    UPayloadFormat::Text,
                 )
                 .unwrap();
             let _ = self.0.send(umessage).await;
@@ -63,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("uProtocol RPC server example");
     let operation_uuri = UUri::from_str("//rpc_server/AAA/1/6A10")?;
-    let uri_provider = StaticUriProvider::try_from(&operation_uuri)?;
+    let uri_provider = StaticUriProvider::from(&operation_uuri);
     let transport = UPTransportZenoh::builder(uri_provider.get_authority())
         .expect("invalid authority name")
         .with_config(common::get_zenoh_config())

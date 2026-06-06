@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol notifier example");
-    let uri_provider = StaticUriProvider::new("notification", 0xa1b2, 1);
+    let uri_provider = StaticUriProvider::new("notification", 0xa1b2, 1)?;
     let transport = UPTransportZenoh::builder(uri_provider.get_authority())
         .expect("invalid authority name")
         .with_config(common::get_zenoh_config())
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &sink_uuri.to_uri(false)
         );
         let umessage = UMessageBuilder::notification(source_uuri.clone(), sink_uuri.clone())
-            .build_with_payload(data, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+            .build_with_payload(data, UPayloadFormat::Text)?;
         transport.send(umessage).await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
     }

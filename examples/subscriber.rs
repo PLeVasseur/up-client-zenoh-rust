@@ -33,9 +33,9 @@ impl UListener for SubscriberListener {
         // Offload processing of the message to a dedicated tokio runtime using
         // threads not used by Zenoh.
         self.0.spawn(async move {
-            let payload = msg.payload.unwrap();
+            let payload = msg.payload().expect("message has no payload");
             let value = String::from_utf8(payload.to_vec()).unwrap();
-            let uri = msg.attributes.unwrap().source.unwrap().to_uri(false);
+            let uri = msg.source().to_uri(false);
             println!("Received message [topic: {uri}, payload: {value}]");
         });
     }

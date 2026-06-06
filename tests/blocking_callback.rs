@@ -26,8 +26,8 @@ struct DelayListener(Sender<UUID>);
 #[async_trait]
 impl UListener for DelayListener {
     async fn on_receive(&self, msg: UMessage) {
-        let msg_id = msg.id_unchecked().to_owned();
-        if let Some(mut pl) = msg.payload {
+        let msg_id = msg.id().to_owned();
+        if let Some(mut pl) = msg.payload().map(bytes::Bytes::copy_from_slice) {
             if !pl.is_empty() {
                 let delay_millis = pl.get_u32();
                 if delay_millis > 0 {
@@ -47,7 +47,7 @@ async fn test_blocking_user_callback() {
     // create subscriber
     let topic = UUri::try_from_parts("vehicle", 0xaa0, 1, 0x8500).expect("invalid topic");
     let (tx, mut rx) = tokio::sync::mpsc::channel(5);
-    let transport = test_lib::create_up_transport_zenoh(topic.authority_name().as_str(), None)
+    let transport = test_lib::create_up_transport_zenoh(topic.authority_name(), None)
         .await
         .expect("failed to create transport");
     transport
@@ -62,7 +62,7 @@ async fn test_blocking_user_callback() {
     let msg0_id = UUID::build();
     let msg0 = UMessageBuilder::publish(topic.clone())
         .with_message_id(msg0_id.clone())
-        .build_with_payload(buf, UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+        .build_with_payload(buf, UPayloadFormat::Raw)
         .expect("failed to create message");
     transport.send(msg0).await.expect("failed to send message");
 

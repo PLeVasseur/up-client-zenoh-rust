@@ -22,7 +22,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::mpsc;
-use up_rust_zc::{
+use up_rust::{
     try_project_umessage_to_frame_metadata, PayloadLoanProvenance, UFrameView as _,
     ULoanedContiguousZeroCopyRxFrame as _, UMessageBuilder, UPayloadFormat, UTxBuffer as _,
     UTxLoanSpec, UUri, UZeroCopyListener, UZeroCopyTransport as _,
@@ -45,7 +45,7 @@ fn source_wildcard(authority: &str) -> UUri {
     UUri::try_from_parts(authority, 0xFFFF_FFFF, 0xFF, 0xFFFF).expect("wildcard")
 }
 
-fn payload_metadata(source: UUri, len: usize) -> up_rust_zc::UFrameMetadata {
+fn payload_metadata(source: UUri, len: usize) -> up_rust::UFrameMetadata {
     let message = UMessageBuilder::publish(source)
         .build_with_payload(Bytes::from(vec![0_u8; len]), UPayloadFormat::Raw)
         .expect("message");

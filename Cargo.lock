@@ -3437,9 +3437,8 @@ dependencies = [
 
 [[package]]
 name = "up-rust"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b015cef2972e0d26960821b9e815cab28d4c447ea49f2da5e72aed0a9fb4a436"
+version = "0.10.0-SNAPSHOT"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=3467db44c427b0a7bd793ce65eeadaef205ca88d#3467db44c427b0a7bd793ce65eeadaef205ca88d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3450,25 +3449,11 @@ dependencies = [
  "protoc-bin-vendored",
  "rand 0.9.4",
  "regex",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
- "tracing",
- "uriparse",
- "uuid-simd",
-]
-
-[[package]]
-name = "up-rust"
-version = "0.10.0-SNAPSHOT"
-dependencies = [
- "async-trait",
- "bytes",
- "mediatype",
- "protobuf",
- "protobuf-codegen",
- "protoc-bin-vendored",
- "rand 0.9.4",
- "regex",
  "tracing",
  "up-rust-macros",
  "uriparse",
@@ -3478,6 +3463,7 @@ dependencies = [
 [[package]]
 name = "up-rust-macros"
 version = "0.10.0-SNAPSHOT"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=3467db44c427b0a7bd793ce65eeadaef205ca88d#3467db44c427b0a7bd793ce65eeadaef205ca88d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3500,8 +3486,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "up-rust 0.10.0-SNAPSHOT",
- "up-rust 0.9.0",
+ "up-rust",
  "zenoh",
 ]
 

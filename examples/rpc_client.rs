@@ -38,9 +38,9 @@ struct ResponseListener(Arc<Notify>);
 #[async_trait]
 impl UListener for ResponseListener {
     async fn on_receive(&self, msg: UMessage) {
-        let payload = msg.payload.unwrap();
+        let payload = msg.payload().expect("message has no payload");
         let value = String::from_utf8(payload.to_vec()).unwrap();
-        let uri = msg.attributes.unwrap().source.unwrap().to_uri(false);
+        let uri = msg.source().to_uri(false);
         println!("Received RPC response [from: {uri}, payload: {value}]");
         self.0.notify_one();
     }
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol RPC client example");
-    let uri_provider = StaticUriProvider::new("l1_rpc_client", 0xdd00, 2);
+    let uri_provider = StaticUriProvider::new("l1_rpc_client", 0xdd00, 2)?;
     let transport = UPTransportZenoh::builder(uri_provider.get_authority())
         .expect("invalid authority name")
         .with_config(common::get_zenoh_config())
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create and send request message
     let request_message =
         UMessageBuilder::request(operation_uuri.clone(), reply_to_uuri.clone(), REQUEST_TTL)
-            .build_with_payload("GetCurrentTime", UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+            .build_with_payload("GetCurrentTime", UPayloadFormat::Text)?;
     println!(
         "Sending RPC request [from: {}, to: {}]",
         reply_to_uuri.to_uri(false),

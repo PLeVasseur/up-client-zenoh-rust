@@ -15,7 +15,7 @@ use std::{mem::MaybeUninit, num::NonZeroUsize, sync::Arc};
 
 use async_trait::async_trait;
 use tracing::{trace, warn};
-use up_rust_zc::{
+use up_rust::{
     LoanedPayload, PayloadEncoding, PayloadLoanProvenance, ProtobufMappable, UCode, UFrameMetadata,
     UFrameView, ULoanedContiguousZeroCopyRxFrame, UPayloadFormat, UPriority, UStatus, UTxBuffer,
     UUninitTxBuffer, UWireError, UZeroCopyListener, UZeroCopyRxLease, UZeroCopyTransportImpl,
@@ -266,8 +266,8 @@ impl UZeroCopyTransportImpl for UPTransportZenoh {
 
     async fn receive_validated_zero_copy(
         &self,
-        source_filter: &up_rust_zc::UUri,
-        sink_filter: Option<&up_rust_zc::UUri>,
+        source_filter: &up_rust::UUri,
+        sink_filter: Option<&up_rust::UUri>,
     ) -> Result<Self::Rx, UStatus> {
         let zenoh_key =
             to_zenoh_key_string(source_filter, sink_filter, self.local_authority.as_str());
@@ -313,8 +313,8 @@ impl UZeroCopyTransportImpl for UPTransportZenoh {
 
     async fn register_validated_zero_copy_listener(
         &self,
-        source_filter: &up_rust_zc::UUri,
-        sink_filter: Option<&up_rust_zc::UUri>,
+        source_filter: &up_rust::UUri,
+        sink_filter: Option<&up_rust::UUri>,
         listener: Arc<dyn UZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
         let zenoh_key =
@@ -326,8 +326,8 @@ impl UZeroCopyTransportImpl for UPTransportZenoh {
 
     async fn unregister_validated_zero_copy_listener(
         &self,
-        source_filter: &up_rust_zc::UUri,
-        sink_filter: Option<&up_rust_zc::UUri>,
+        source_filter: &up_rust::UUri,
+        sink_filter: Option<&up_rust::UUri>,
         listener: Arc<dyn UZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
         let zenoh_key =
@@ -454,7 +454,7 @@ fn validate_alignment(alignment: usize) -> Result<(), UStatus> {
     Ok(())
 }
 
-fn sink_matches(actual: Option<&up_rust_zc::UUri>, filter: Option<&up_rust_zc::UUri>) -> bool {
+fn sink_matches(actual: Option<&up_rust::UUri>, filter: Option<&up_rust::UUri>) -> bool {
     filter.is_none_or(|filter| actual.is_some_and(|actual| filter.matches(actual)))
 }
 
@@ -497,8 +497,8 @@ fn map_zenoh_priority(priority: UPriority) -> zenoh::qos::Priority {
 }
 
 fn to_zenoh_key_string(
-    src_uri: &up_rust_zc::UUri,
-    dst_uri: Option<&up_rust_zc::UUri>,
+    src_uri: &up_rust::UUri,
+    dst_uri: Option<&up_rust::UUri>,
     fallback_authority: &str,
 ) -> String {
     let src = uri_to_zenoh_key(src_uri, fallback_authority);
@@ -509,7 +509,7 @@ fn to_zenoh_key_string(
     format!("up/{src}/{dst}")
 }
 
-fn uri_to_zenoh_key(uri: &up_rust_zc::UUri, fallback_authority: &str) -> String {
+fn uri_to_zenoh_key(uri: &up_rust::UUri, fallback_authority: &str) -> String {
     let authority = if uri.authority_name().is_empty() {
         fallback_authority.to_string()
     } else {
@@ -587,10 +587,8 @@ pub(crate) fn attachment_to_frame_metadata(attachment: &ZBytes) -> Result<UFrame
             "invalid frame metadata",
         ));
     }
-    let attributes = up_rust_zc::UAttributes::parse_from_protobuf_bytes(take_len_bytes(
-        &mut bytes,
-    )?)
-    .map_err(|err| {
+    let attributes = up_rust::UAttributes::parse_from_protobuf_bytes(take_len_bytes(&mut bytes)?)
+        .map_err(|err| {
         UStatus::fail_with_code(
             UCode::InvalidArgument,
             format!("failed to decode UFrameMetadata attributes: {err}"),
@@ -695,7 +693,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use bytes::Bytes;
-    use up_rust_zc::{
+    use up_rust::{
         try_project_umessage_to_frame_metadata, UMessageBuilder, UPayloadFormat, UTxBuffer as _,
         UTxLoanSpec, UUninitTxBuffer as _, UUri, UZeroCopyTransport as _,
         UZeroCopyUninitTransport as _,

@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol publisher example");
-    let uri_provider = StaticUriProvider::new("publisher", 0x3_b1da, 1);
+    let uri_provider = StaticUriProvider::new("publisher", 0x3_b1da, 1)?;
     let transport = UPTransportZenoh::builder(uri_provider.get_authority())
         .expect("invalid authority name")
         .with_config(common::get_zenoh_config())
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             topic.to_uri(false)
         );
         let umessage = UMessageBuilder::publish(topic.clone())
-            .build_with_payload(data, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+            .build_with_payload(data, UPayloadFormat::Text)?;
         transport.send(umessage).await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
     }

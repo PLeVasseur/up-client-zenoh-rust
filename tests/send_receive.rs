@@ -70,15 +70,15 @@ async fn register_listener_and_send(
     // Send UMessage
     info!(
         "sending message: [id: {}, type: {}]",
-        umessage.id_unchecked().to_hyphenated_string(),
-        umessage.type_unchecked().to_cloudevent_type()
+        umessage.id().to_hyphenated_string(),
+        umessage.type_().to_cloudevent_type()
     );
     transport.send(umessage).await?;
     Ok(
         tokio::time::timeout(Duration::from_secs(3), notify.notified())
             .await
             .map_err(|_| {
-                UStatus::fail_with_code(UCode::DEADLINE_EXCEEDED, "did not receive message in time")
+                UStatus::fail_with_code(UCode::DeadlineExceeded, "did not receive message in time")
             })?,
     )
 }
@@ -98,7 +98,7 @@ async fn send_and_receive_message(
     tokio::time::timeout(Duration::from_secs(3), rx.recv())
         .await?
         .ok_or_else(|| {
-            UStatus::fail_with_code(UCode::DEADLINE_EXCEEDED, "did not receive message in time")
+            UStatus::fail_with_code(UCode::DeadlineExceeded, "did not receive message in time")
         })
         .map_err(Into::into)
 }
@@ -116,10 +116,7 @@ async fn test_protobuf_payload_round_trips_via_utransport() -> Result<(), Box<dy
     let received = send_and_receive_message("compatpb", umessage, &topic).await?;
     let decoded: StringValue = received.extract_protobuf()?;
 
-    assert_eq!(
-        received.payload_format(),
-        Some(UPayloadFormat::UPAYLOAD_FORMAT_PROTOBUF)
-    );
+    assert_eq!(received.payload_format(), Some(UPayloadFormat::Protobuf));
     assert_eq!(decoded.value, payload.value);
     Ok(())
 }
@@ -134,18 +131,12 @@ async fn test_raw_stable_bytes_round_trip_via_utransport() -> Result<(), Box<dyn
         0x55, 0x50, 0x2D, 0x53, 0x54, 0x41, 0x42, 0x4C, 0x45, 0x01, 0x02,
     ];
     let umessage = UMessageBuilder::publish(topic.clone())
-        .build_with_payload(stable_bytes.clone(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+        .build_with_payload(stable_bytes.clone(), UPayloadFormat::Raw)?;
 
     let received = send_and_receive_message("compatraw", umessage, &topic).await?;
 
-    assert_eq!(
-        received.payload_format(),
-        Some(UPayloadFormat::UPAYLOAD_FORMAT_RAW)
-    );
-    assert_eq!(
-        received.payload.as_ref().map(bytes::Bytes::as_ref),
-        Some(stable_bytes.as_slice())
-    );
+    assert_eq!(received.payload_format(), Some(UPayloadFormat::Raw));
+    assert_eq!(received.payload(), Some(stable_bytes.as_slice()));
     Ok(())
 }
 
@@ -165,10 +156,10 @@ async fn test_publish_message_gets_delivered_to_listener(
     let topic = UUri::from_str(topic_uri)?;
     let source_filter = UUri::from_str(source_filter_uri)?;
     let umessage = UMessageBuilder::publish(topic.clone())
-        .with_priority(up_rust::UPriority::UPRIORITY_CS5)
+        .with_priority(up_rust::UPriority::CS5)
         .with_traceparent("traceparent")
         .with_ttl(ttl)
-        .build_with_payload(MESSAGE_DATA, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+        .build_with_payload(MESSAGE_DATA, UPayloadFormat::Text)?;
 
     // [utest->dsn~utransport-registerlistener-start-invoking-listeners~1]
     register_listener_and_send(authority, umessage, &source_filter, None).await
@@ -216,10 +207,10 @@ async fn test_notification_message_gets_delivered_to_listener(
     let source_filter = UUri::from_str(source_filter_uri)?;
     let sink_filter = UUri::from_str(sink_filter_uri)?;
     let umessage = UMessageBuilder::notification(source, sink)
-        .with_priority(up_rust::UPriority::UPRIORITY_CS2)
+        .with_priority(up_rust::UPriority::CS2)
         .with_traceparent("traceparent")
         .with_ttl(ttl)
-        .build_with_payload(MESSAGE_DATA, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+        .build_with_payload(MESSAGE_DATA, UPayloadFormat::Text)?;
 
     // [utest->dsn~utransport-registerlistener-start-invoking-listeners~1]
     register_listener_and_send(authority, umessage, &source_filter, Some(&sink_filter)).await
@@ -260,11 +251,11 @@ async fn test_rpc_request_message_gets_delivered_to_listener(
     let source_filter = UUri::from_str(source_filter_uri)?;
     let sink_filter = UUri::from_str(sink_filter_uri)?;
     let umessage = UMessageBuilder::request(method_to_invoke, reply_to, 5_000)
-        .with_priority(up_rust::UPriority::UPRIORITY_CS5)
+        .with_priority(up_rust::UPriority::CS5)
         .with_token("token")
         .with_traceparent("traceparent")
         .with_permission_level(15)
-        .build_with_payload(MESSAGE_DATA, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+        .build_with_payload(MESSAGE_DATA, UPayloadFormat::Text)?;
 
     // [utest->dsn~utransport-registerlistener-start-invoking-listeners~1]
     register_listener_and_send(authority, umessage, &source_filter, Some(&sink_filter)).await
@@ -301,10 +292,10 @@ async fn test_rpc_response_message_gets_delivered_to_listener(
     let sink_filter = UUri::from_str(sink_filter_uri)?;
     let umessage = UMessageBuilder::response(reply_to, UUID::build(), invoked_method)
         .with_ttl(5_000)
-        .with_priority(up_rust::UPriority::UPRIORITY_CS5)
+        .with_priority(up_rust::UPriority::CS5)
         .with_traceparent("traceparent")
-        .with_comm_status(up_rust::UCode::NOT_FOUND)
-        .build_with_payload(MESSAGE_DATA, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+        .with_comm_status(up_rust::UCode::NotFound)
+        .build_with_payload(MESSAGE_DATA, UPayloadFormat::Text)?;
 
     // [utest->dsn~utransport-registerlistener-start-invoking-listeners~1]
     register_listener_and_send(authority, umessage, &source_filter, Some(&sink_filter)).await
@@ -321,20 +312,17 @@ async fn test_expired_rpc_request_message_is_not_delivered_to_listener() {
     // timestamp = 0x018D548EA8E0 (Monday, 29 January 2024, 9:30:52 AM GMT)
     // ver = 0b0111
     // variant = 0b10
-    let uuid = UUID {
-        msb: 0x018D_548E_A8E0_7000u64,
-        lsb: 0x8000_0000_0000_0000u64,
-        ..Default::default()
-    };
+    let uuid = UUID::from_u64_pair(0x018D_548E_A8E0_7000u64, 0x8000_0000_0000_0000u64)
+        .expect("invalid UUID");
     // create message that is already expired, based on the timestamp in
     // the UUID
     let umessage = UMessageBuilder::request(method_to_invoke, reply_to, 5_000)
         .with_message_id(uuid)
-        .with_priority(up_rust::UPriority::UPRIORITY_CS5)
+        .with_priority(up_rust::UPriority::CS5)
         .with_token("token")
         .with_traceparent("traceparent")
         .with_permission_level(15)
-        .build_with_payload(MESSAGE_DATA, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+        .build_with_payload(MESSAGE_DATA, UPayloadFormat::Text)
         .expect("failed to create message");
 
     // [utest->dsn~up-attributes-ttl-timeout~1]
@@ -343,7 +331,7 @@ async fn test_expired_rpc_request_message_is_not_delivered_to_listener() {
             .await
             .is_err_and(|e| {
                 let err = e.downcast_ref::<UStatus>().unwrap();
-                matches!(err.get_code(), UCode::DEADLINE_EXCEEDED)
+                matches!(err.get_code(), UCode::DeadlineExceeded)
             }),
         "Expected to fail with DEADLINE_EXCEEDED error for expired message"
     );

@@ -100,14 +100,14 @@ impl UPTransportZenoh {
         let authority_name = local_authority.into();
         if authority_name.is_empty() || &authority_name == "*" {
             return Err(UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
+                UCode::InvalidArgument,
                 "Authority name must be non-empty and must not be the wildcard authority name",
             ));
         }
 
         UUri::verify_authority(&authority_name).map_err(|err| {
             UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
+                UCode::InvalidArgument,
                 format!("Invalid authority name: {err}"),
             )
         })?;
@@ -130,7 +130,7 @@ impl UPTransportZenoh {
         let session = zenoh::open(config).await.map_err(|err| {
             let msg = "Failed to open Zenoh session";
             error!("{msg}: {err}");
-            UStatus::fail_with_code(UCode::INTERNAL, msg)
+            UStatus::fail_with_code(UCode::Internal, msg)
         })?;
         Ok(Self::init_with_session(session, common))
     }
@@ -149,7 +149,7 @@ impl UPTransportZenoh {
     }
 
     #[cfg(feature = "zero-copy")]
-    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, up_rust_zc::UStatus> {
+    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, up_rust::UStatus> {
         self.shm_provider
             .get_or_init(|| {
                 ShmProviderBuilder::default_backend(self.shm_segment_size)
@@ -159,8 +159,8 @@ impl UPTransportZenoh {
             })
             .clone()
             .map_err(|err| {
-                up_rust_zc::UStatus::fail_with_code(
-                    up_rust_zc::UCode::Internal,
+                up_rust::UStatus::fail_with_code(
+                    up_rust::UCode::Internal,
                     format!("failed to initialize Zenoh SHM provider: {err}"),
                 )
             })
@@ -300,13 +300,13 @@ impl UPTransportZenohBuilder<ConfigPathBuilderState> {
     ///    .with_config_path("non-existing-config.json5".to_string())
     ///    .build()
     ///    .await
-    ///    .is_err_and(|e| e.get_code() == up_rust::UCode::INVALID_ARGUMENT));
+    ///    .is_err_and(|e| e.get_code() == up_rust::UCode::InvalidArgument));
     /// # }
     /// ```
     pub async fn build(self) -> Result<UPTransportZenoh, UStatus> {
         let config = zenoh_config::Config::from_file(self.extra.config_path).map_err(|e| {
             error!("Failed to load Zenoh config from file: {e}");
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, e.to_string())
+            UStatus::fail_with_code(UCode::InvalidArgument, e.to_string())
         })?;
         UPTransportZenoh::init_with_config(config, *self.common).await
     }
@@ -364,12 +364,12 @@ impl<S: BuilderState> UPTransportZenohBuilder<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`UCode::INVALID_ARGUMENT`] when `shm_segment_size` is zero.
+    /// Returns [`UCode::InvalidArgument`] when `shm_segment_size` is zero.
     #[cfg(feature = "zero-copy")]
     pub fn with_shm_segment_size(mut self, shm_segment_size: usize) -> Result<Self, UStatus> {
         if shm_segment_size == 0 {
             return Err(UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
+                UCode::InvalidArgument,
                 "Zenoh SHM segment size must be greater than zero",
             ));
         }
