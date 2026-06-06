@@ -30,6 +30,10 @@ pedantic = "deny"
 #restriction = "deny"
 #nursery = "deny"
 
+[features]
+default = []
+zero-copy = ["dep:up-rust-zc", "zenoh/shared-memory", "zenoh/unstable"]
+
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1"
@@ -38,6 +42,7 @@ protobuf = { version = "3.7.2" }
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
 up-rust = { version = "0.9", default-features = false }
+up-rust-zc = { package = "up-rust", path = "../up-rust", default-features = false, optional = true }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
 zenoh = { version = "1.9.0" }
 

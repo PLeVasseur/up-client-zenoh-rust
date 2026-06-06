@@ -28,18 +28,36 @@ and does not spawn any threads itself.
 
 mod listener_registry;
 pub(crate) mod utransport;
+#[cfg(feature = "zero-copy")]
+mod zero_copy;
 
 use std::sync::Arc;
+#[cfg(feature = "zero-copy")]
+use std::sync::OnceLock;
 
 use listener_registry::ListenerRegistry;
 use tracing::error;
 use up_rust::{UCode, UStatus, UUri};
+#[cfg(feature = "zero-copy")]
+use zenoh::{
+    shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
+    Wait,
+};
 use zenoh::{Config, Session};
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
+#[cfg(feature = "zero-copy")]
+pub use zero_copy::{ZenohTxBuffer, ZenohUninitTxBuffer};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
+#[cfg(feature = "zero-copy")]
+const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "zero-copy")]
+type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
+#[cfg(feature = "zero-copy")]
+type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 
 /// An Eclipse Zenoh &trade; based uProtocol transport implementation.
 ///
@@ -59,6 +77,10 @@ pub struct UPTransportZenoh {
     session: Arc<Session>,
     subscribers: ListenerRegistry,
     local_authority: String,
+    #[cfg(feature = "zero-copy")]
+    shm_segment_size: usize,
+    #[cfg(feature = "zero-copy")]
+    shm_provider: OnceLock<ZenohShmProviderInit>,
 }
 
 impl UPTransportZenoh {
@@ -94,6 +116,8 @@ impl UPTransportZenoh {
             common: Box::new(CommonProperties {
                 local_authority: authority_name,
                 max_listeners: DEFAULT_MAX_LISTENERS,
+                #[cfg(feature = "zero-copy")]
+                shm_segment_size: DEFAULT_SHM_SEGMENT_SIZE,
             }),
             extra: InitialBuilderState,
         })
@@ -101,32 +125,45 @@ impl UPTransportZenoh {
 
     async fn init_with_config(
         config: Config,
-        local_authority: String,
-        max_listeners: usize,
+        common: CommonProperties,
     ) -> Result<UPTransportZenoh, UStatus> {
         let session = zenoh::open(config).await.map_err(|err| {
             let msg = "Failed to open Zenoh session";
             error!("{msg}: {err}");
             UStatus::fail_with_code(UCode::INTERNAL, msg)
         })?;
-        Ok(Self::init_with_session(
-            session,
-            local_authority,
-            max_listeners,
-        ))
+        Ok(Self::init_with_session(session, common))
     }
 
-    fn init_with_session(
-        session: Session,
-        local_authority: String,
-        max_listeners: usize,
-    ) -> UPTransportZenoh {
+    fn init_with_session(session: Session, common: CommonProperties) -> UPTransportZenoh {
         let session_to_use = Arc::new(session);
         UPTransportZenoh {
             session: session_to_use.clone(),
-            subscribers: ListenerRegistry::new(session_to_use, max_listeners),
-            local_authority,
+            subscribers: ListenerRegistry::new(session_to_use, common.max_listeners),
+            local_authority: common.local_authority,
+            #[cfg(feature = "zero-copy")]
+            shm_segment_size: common.shm_segment_size,
+            #[cfg(feature = "zero-copy")]
+            shm_provider: OnceLock::new(),
         }
+    }
+
+    #[cfg(feature = "zero-copy")]
+    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, up_rust_zc::UStatus> {
+        self.shm_provider
+            .get_or_init(|| {
+                ShmProviderBuilder::default_backend(self.shm_segment_size)
+                    .wait()
+                    .map(Arc::new)
+                    .map_err(|err| err.to_string())
+            })
+            .clone()
+            .map_err(|err| {
+                up_rust_zc::UStatus::fail_with_code(
+                    up_rust_zc::UCode::Internal,
+                    format!("failed to initialize Zenoh SHM provider: {err}"),
+                )
+            })
     }
 
     /// Enables a tracing formatter subscriber that is initialized from the `RUST_LOG` environment variable.
@@ -138,6 +175,8 @@ impl UPTransportZenoh {
 struct CommonProperties {
     local_authority: String,
     max_listeners: usize,
+    #[cfg(feature = "zero-copy")]
+    shm_segment_size: usize,
 }
 
 pub struct InitialBuilderState;
@@ -233,12 +272,7 @@ impl UPTransportZenohBuilder<ConfigBuilderState> {
     /// # }
     /// ```
     pub async fn build(self) -> Result<UPTransportZenoh, UStatus> {
-        UPTransportZenoh::init_with_config(
-            self.extra.config,
-            self.common.local_authority,
-            self.common.max_listeners,
-        )
-        .await
+        UPTransportZenoh::init_with_config(self.extra.config, *self.common).await
     }
 }
 
@@ -274,12 +308,7 @@ impl UPTransportZenohBuilder<ConfigPathBuilderState> {
             error!("Failed to load Zenoh config from file: {e}");
             UStatus::fail_with_code(UCode::INVALID_ARGUMENT, e.to_string())
         })?;
-        UPTransportZenoh::init_with_config(
-            config,
-            self.common.local_authority,
-            self.common.max_listeners,
-        )
-        .await
+        UPTransportZenoh::init_with_config(config, *self.common).await
     }
 }
 
@@ -314,8 +343,7 @@ impl UPTransportZenohBuilder<SessionBuilderState> {
     pub fn build(self) -> Result<UPTransportZenoh, UStatus> {
         Ok(UPTransportZenoh::init_with_session(
             self.extra.zenoh_session,
-            self.common.local_authority,
-            self.common.max_listeners,
+            *self.common,
         ))
     }
 }
@@ -327,6 +355,26 @@ impl<S: BuilderState> UPTransportZenohBuilder<S> {
     pub fn with_max_listeners(mut self, max_listeners: usize) -> Self {
         self.common.max_listeners = max_listeners;
         self
+    }
+
+    /// Sets the Zenoh shared-memory provider segment size in bytes.
+    ///
+    /// The value is used lazily when the first zero-copy transmit loan is
+    /// reserved. If not set explicitly, the default is 64 MiB.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UCode::INVALID_ARGUMENT`] when `shm_segment_size` is zero.
+    #[cfg(feature = "zero-copy")]
+    pub fn with_shm_segment_size(mut self, shm_segment_size: usize) -> Result<Self, UStatus> {
+        if shm_segment_size == 0 {
+            return Err(UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                "Zenoh SHM segment size must be greater than zero",
+            ));
+        }
+        self.common.shm_segment_size = shm_segment_size;
+        Ok(self)
     }
 }
 
