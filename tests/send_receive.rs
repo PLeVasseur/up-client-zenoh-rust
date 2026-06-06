@@ -15,7 +15,11 @@ mod test_lib;
 use std::{str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
-use tokio::{sync::Notify, time::Duration};
+use protobuf::well_known_types::wrappers::StringValue;
+use tokio::{
+    sync::{mpsc, Notify},
+    time::Duration,
+};
 use tracing::info;
 use up_rust::{
     MockUListener, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat, UStatus,
@@ -26,6 +30,8 @@ const MESSAGE_DATA: &str = "Hello World!";
 
 struct MessageHandler(UMessage, Arc<Notify>);
 
+struct MessageSender(mpsc::UnboundedSender<UMessage>);
+
 #[async_trait]
 impl UListener for MessageHandler {
     async fn on_receive(&self, msg: UMessage) {
@@ -33,6 +39,15 @@ impl UListener for MessageHandler {
         // [utest->dsn~up-transport-zenoh-attributes-mapping~1]
         assert_eq!(self.0, msg);
         self.1.notify_one();
+    }
+}
+
+#[async_trait]
+impl UListener for MessageSender {
+    async fn on_receive(&self, msg: UMessage) {
+        self.0
+            .send(msg)
+            .expect("failed to forward received message");
     }
 }
 
@@ -66,6 +81,72 @@ async fn register_listener_and_send(
                 UStatus::fail_with_code(UCode::DEADLINE_EXCEEDED, "did not receive message in time")
             })?,
     )
+}
+
+async fn send_and_receive_message(
+    authority: &str,
+    umessage: UMessage,
+    source_filter: &UUri,
+) -> Result<UMessage, Box<dyn std::error::Error>> {
+    let transport = test_lib::create_up_transport_zenoh(authority, None).await?;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    transport
+        .register_listener(source_filter, None, Arc::new(MessageSender(tx)))
+        .await?;
+
+    transport.send(umessage).await?;
+    tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await?
+        .ok_or_else(|| {
+            UStatus::fail_with_code(UCode::DEADLINE_EXCEEDED, "did not receive message in time")
+        })
+        .map_err(Into::into)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_protobuf_payload_round_trips_via_utransport() -> Result<(), Box<dyn std::error::Error>>
+{
+    test_lib::before_test();
+
+    let topic = UUri::from_str("//compatpb/4210/1/9001")?;
+    let mut payload = StringValue::new();
+    payload.value = "protobuf over ordinary zenoh utransport".to_string();
+    let umessage = UMessageBuilder::publish(topic.clone()).build_with_protobuf_payload(&payload)?;
+
+    let received = send_and_receive_message("compatpb", umessage, &topic).await?;
+    let decoded: StringValue = received.extract_protobuf()?;
+
+    assert_eq!(
+        received.payload_format(),
+        Some(UPayloadFormat::UPAYLOAD_FORMAT_PROTOBUF)
+    );
+    assert_eq!(decoded.value, payload.value);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_raw_stable_bytes_round_trip_via_utransport() -> Result<(), Box<dyn std::error::Error>>
+{
+    test_lib::before_test();
+
+    let topic = UUri::from_str("//compatraw/4210/1/9002")?;
+    let stable_bytes = vec![
+        0x55, 0x50, 0x2D, 0x53, 0x54, 0x41, 0x42, 0x4C, 0x45, 0x01, 0x02,
+    ];
+    let umessage = UMessageBuilder::publish(topic.clone())
+        .build_with_payload(stable_bytes.clone(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+
+    let received = send_and_receive_message("compatraw", umessage, &topic).await?;
+
+    assert_eq!(
+        received.payload_format(),
+        Some(UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+    );
+    assert_eq!(
+        received.payload.as_ref().map(bytes::Bytes::as_ref),
+        Some(stable_bytes.as_slice())
+    );
+    Ok(())
 }
 
 #[test_case::test_case("vehicle1", 12_000, "//vehicle1/10A10B/1/CA5D", "//vehicle1/10A10B/1/CA5D"; "specific source filter")]
