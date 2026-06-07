@@ -39,6 +39,11 @@ payload-contract-large-benchmarks = [
 ]
 zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
 
+[[bench]]
+name = "transport_criterion"
+harness = false
+required-features = ["zero-copy", "payload-contract-benchmarks"]
+
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1"
@@ -53,6 +58,7 @@ zenoh = { version = "1.9.0" }
 [dev-dependencies]
 chrono = "0.4.44"
 clap = { version = "4.5.51", features = ["derive"] }
+criterion = { version = "0.5.1", features = ["csv_output"] }
 serde_json = "1.0.145"
 serial_test = { version = "3.4.0" }
 test-case = { version = "3.3" }
