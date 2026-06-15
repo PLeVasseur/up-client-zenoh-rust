@@ -13,8 +13,10 @@
 pub mod rpc;
 pub mod uri_provider;
 pub mod utransport;
+pub mod wire_smoke;
 
 pub use rpc::ZenohRpcClient;
+pub use wire_smoke::{ZenohEncodedRxFrame, ZenohPreparedAttachment, ZenohTxBuffer, ZenohWireCore};
 
 use bitmask_enum::bitmask;
 use protobuf::Message;
