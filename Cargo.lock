@@ -2811,7 +2811,15 @@ dependencies = [
  "tracing-subscriber",
  "up-rust 0.1.5",
  "up-rust 0.10.0-SNAPSHOT",
+ "up-wire-xcdrv2",
  "zenoh",
+]
+
+[[package]]
+name = "up-wire-xcdrv2"
+version = "0.0.0"
+dependencies = [
+ "up-rust 0.10.0-SNAPSHOT",
 ]
 
 [[package]]
