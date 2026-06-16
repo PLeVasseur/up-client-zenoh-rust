@@ -13,11 +13,13 @@
 pub mod rpc;
 pub mod uri_provider;
 pub mod utransport;
+#[cfg(feature = "benchmark-owned")]
 pub mod wire_full;
 #[cfg(feature = "zero-copy")]
 mod zero_copy;
 
 pub use rpc::ZenohRpcClient;
+#[cfg(feature = "benchmark-owned")]
 pub use wire_full::{ZenohEncodedOwnedFrameLog, ZenohOwnedCore};
 #[cfg(feature = "zero-copy")]
 pub use zero_copy::{

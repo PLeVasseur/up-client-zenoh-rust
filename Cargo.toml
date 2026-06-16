@@ -37,6 +37,7 @@ pedantic = "deny"
 
 [features]
 default = []
+benchmark-owned = ["up-rust/owned-frame-transport"]
 zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
 
 [dependencies]
@@ -54,7 +55,7 @@ rand = "0.8.5"
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "26d70ef45af61fdd17d3e130845a5be155154b2e", features = ["owned-frame-transport"] }
+up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "26d70ef45af61fdd17d3e130845a5be155154b2e" }
 zenoh = { version = "1.9.0", features = ["internal", "unstable"] }
 
 [dev-dependencies]
@@ -65,6 +66,10 @@ up-wire-xcdrv2 = { git = "ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.gi
 [[test]]
 name = "zero_copy_transport"
 required-features = ["zero-copy"]
+
+[[test]]
+name = "zenoh_owned_wire"
+required-features = ["benchmark-owned"]
 
 [profile.release]
 opt-level = 3

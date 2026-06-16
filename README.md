@@ -33,3 +33,7 @@ cargo run --example rpc_client
 ## Note
 
 The implementation follows the spec defined in [up-l1/zenoh](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-l1/zenoh.adoc).
+
+## Feature-Gated Owned Support
+
+`ZenohOwnedCore` is available only with `--features benchmark-owned`. It is a disabled-by-default owned-frame support path for benchmark/support measurements and selected-wire owned tests; it is not zero-copy evidence and is not part of the default transport API.
