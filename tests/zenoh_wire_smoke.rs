@@ -5,12 +5,9 @@ use bytes::Bytes;
 use up_rust::{
     EncodedOwnedFrame, PayloadEncoding, PayloadFormat, ProtobufWire, UCode, UFrameMetadata,
     UFrameView, UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat,
-    UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUri, UWireMetadata, UWithWire, UZeroCopyListener,
-    UZeroCopyTransport,
+    UProtocolNativeWire, UUri, UWireMetadata,
 };
-use up_transport_zenoh::{
-    ZenohEncodedRxFrame, ZenohOwnedCore, ZenohPreparedAttachment, ZenohWireCore,
-};
+use up_transport_zenoh::ZenohOwnedCore;
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
 
 fn topic() -> UUri {
@@ -27,110 +24,84 @@ fn source_filter() -> UUri {
 }
 
 #[tokio::test]
-async fn prepared_attachment_bytes_pass_through_for_smoke_wires() {
-    assert_prepared_attachment::<UProtocolNativeWire>(None).await;
-    assert_prepared_attachment::<ProtobufWire>(Some(PayloadEncoding::Standard(
-        UPayloadFormat::Protobuf,
-    )))
+async fn owned_core_carries_prepared_metadata_bytes_for_core_wires() {
+    assert_owned_prepared_metadata::<UProtocolNativeWire>(None, None).await;
+    assert_owned_prepared_metadata::<ProtobufWire>(
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+        Some(Bytes::from_static(b"data")),
+    )
     .await;
 }
 
 #[tokio::test]
-async fn external_xcdrv2_attachment_bytes_pass_through() {
-    assert_prepared_attachment::<XcdrV2Wire>(Some(XcdrV2Wire::encoding())).await;
+async fn owned_core_carries_prepared_metadata_bytes_for_external_xcdrv2() {
+    assert_owned_prepared_metadata::<XcdrV2Wire>(
+        Some(XcdrV2Wire::encoding()),
+        Some(Bytes::copy_from_slice(&VEHICLE_SIGNAL_V1_GOLDEN_BYTES)),
+    )
+    .await;
 }
 
-async fn assert_prepared_attachment<W>(payload_encoding: Option<PayloadEncoding>)
-where
+async fn assert_owned_prepared_metadata<W>(
+    payload_encoding: Option<PayloadEncoding>,
+    payload: Option<Bytes>,
+) where
     W: UWireMetadata + Default + Send + Sync + 'static,
 {
-    let core = ZenohWireCore::new();
-    let transport = core.clone().with_wire(W::default());
+    let core = ZenohOwnedCore::new();
+    let transport = core.clone().with_selected_wire(W::default());
     let frame_metadata = metadata(payload_encoding);
-    let payload_len = if frame_metadata.payload_encoding().is_some() {
-        4
+    let frame = if let Some(payload) = payload {
+        UOwnedFrame::with_payload(frame_metadata.clone(), payload).expect("owned frame")
     } else {
-        0
+        UOwnedFrame::without_payload(frame_metadata.clone()).expect("owned frame")
     };
-    let loan_spec = if payload_len == 0 {
-        UTxLoanSpec::no_payload(frame_metadata.clone()).expect("loan spec")
-    } else {
-        UTxLoanSpec::payload(frame_metadata.clone(), payload_len, 1).expect("loan spec")
-    };
-    let mut tx = transport.loan_tx(loan_spec).await.expect("loan");
-    if payload_len != 0 {
-        tx.payload_mut().copy_from_slice(b"data");
-    }
 
-    let prepared = core.last_prepared().await.expect("prepared request");
-    assert_eq!(prepared.metadata(), &frame_metadata);
-    assert_eq!(prepared.encoded_metadata(), tx.attachment().as_bytes());
-    assert!(!tx.attachment().is_empty());
+    transport.send_owned(frame).await.expect("send owned");
 
-    let decoded = W::decode_frame_metadata(tx.attachment().as_bytes()).expect("decode");
-    assert_eq!(decoded, frame_metadata);
+    let sent = core.last_sent().await.expect("prepared owned frame");
+    assert_eq!(
+        W::decode_frame_metadata(sent.encoded_metadata()).expect("decode metadata"),
+        frame_metadata
+    );
 }
 
 #[tokio::test]
-async fn protobuf_payload_bytes_round_trip_through_pull_receive() {
-    let core = ZenohWireCore::new();
-    let transport = core.clone().with_wire(ProtobufWire);
-    let frame_metadata = metadata(Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)));
-    let mut tx = transport
-        .loan_tx(UTxLoanSpec::payload(frame_metadata, 4, 1).expect("loan spec"))
-        .await
-        .expect("loan");
-    tx.payload_mut().copy_from_slice(b"data");
-    transport.send_zero_copy(tx).await.expect("send");
+async fn owned_core_protobuf_payload_bytes_round_trip_through_pull_receive() {
+    let core = ZenohOwnedCore::new();
+    let metadata = metadata(Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)));
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        ProtobufWire::encode_frame_metadata(&metadata).expect("metadata"),
+        Some(Bytes::from_static(b"data")),
+    ))
+    .await;
+    let transport = core.with_selected_wire(ProtobufWire);
 
     let rx = transport
-        .receive_zero_copy(&source_filter(), None)
+        .receive_owned(&source_filter(), None)
         .await
         .expect("receive");
     assert_eq!(rx.try_contiguous_payload(), Some(&b"data"[..]));
 }
 
 #[tokio::test]
-async fn external_xcdrv2_bytes_round_trip_through_pull_receive() {
-    let core = ZenohWireCore::new();
-    let transport = core.clone().with_wire(XcdrV2Wire);
-    let frame_metadata = metadata(Some(XcdrV2Wire::encoding()));
-    let mut tx = transport
-        .loan_tx(
-            UTxLoanSpec::payload(frame_metadata, VEHICLE_SIGNAL_V1_GOLDEN_BYTES.len(), 1)
-                .expect("loan spec"),
-        )
-        .await
-        .expect("loan");
-    tx.payload_mut()
-        .copy_from_slice(&VEHICLE_SIGNAL_V1_GOLDEN_BYTES);
-    transport.send_zero_copy(tx).await.expect("send");
+async fn owned_core_external_xcdrv2_bytes_round_trip_through_pull_receive() {
+    let core = ZenohOwnedCore::new();
+    let metadata = metadata(Some(XcdrV2Wire::encoding()));
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        XcdrV2Wire::encode_frame_metadata(&metadata).expect("metadata"),
+        Some(Bytes::copy_from_slice(&VEHICLE_SIGNAL_V1_GOLDEN_BYTES)),
+    ))
+    .await;
+    let transport = core.with_selected_wire(XcdrV2Wire);
 
     let rx = transport
-        .receive_zero_copy(&source_filter(), None)
+        .receive_owned(&source_filter(), None)
         .await
         .expect("receive");
     assert_eq!(
         rx.try_contiguous_payload(),
         Some(&VEHICLE_SIGNAL_V1_GOLDEN_BYTES[..])
-    );
-}
-
-#[tokio::test]
-async fn owned_core_carries_prepared_metadata_bytes() {
-    let core = ZenohOwnedCore::new();
-    let transport = core.clone().with_wire(ProtobufWire);
-    let frame_metadata = metadata(Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)));
-    let frame = UOwnedFrame::with_payload(frame_metadata.clone(), Bytes::from_static(b"data"))
-        .expect("owned frame");
-
-    transport.send_owned(frame).await.expect("send owned");
-
-    let sent = core.last_sent().await.expect("prepared owned frame");
-    assert_eq!(sent.payload(), Some(&b"data"[..]));
-    assert_eq!(
-        ProtobufWire::decode_frame_metadata(sent.encoded_metadata()).expect("decode metadata"),
-        frame_metadata
     );
 }
 
@@ -146,7 +117,7 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() {
         Some(Bytes::from_static(b"drop")),
     ))
     .await;
-    let transport = core.with_wire(UProtocolNativeWire);
+    let transport = core.with_selected_wire(UProtocolNativeWire);
 
     let result = transport.receive_owned(&source_filter(), None).await;
     let error = result.err().expect("wrong metadata rejected");
@@ -157,7 +128,7 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() {
 async fn owned_core_malformed_listener_metadata_is_not_delivered() {
     let core = ZenohOwnedCore::new();
     let listener = Arc::new(CountingOwnedListener::default());
-    let transport = core.clone().with_wire(UProtocolNativeWire);
+    let transport = core.clone().with_selected_wire(UProtocolNativeWire);
     transport
         .register_owned_listener(&source_filter(), None, listener.clone())
         .await
@@ -177,128 +148,79 @@ async fn owned_core_malformed_listener_metadata_is_not_delivered() {
 }
 
 #[tokio::test]
-async fn external_xcdrv2_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_frame() {
-    let core = ZenohWireCore::new();
+async fn owned_core_external_xcdrv2_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_frame(
+) {
+    let core = ZenohOwnedCore::new();
     let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(Some(
         PayloadEncoding::Standard(UPayloadFormat::Protobuf),
     )))
     .expect("wrong metadata");
-    core.push_encoded_rx(ZenohEncodedRxFrame::new(
-        ZenohPreparedAttachment::from_encoded_metadata(wrong_metadata),
-        b"drop".to_vec(),
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        wrong_metadata,
+        Some(Bytes::from_static(b"drop")),
     ))
     .await;
-    let transport = core.with_wire(XcdrV2Wire);
+    let transport = core.with_selected_wire(XcdrV2Wire);
 
-    let result = transport.receive_zero_copy(&source_filter(), None).await;
+    let result = transport.receive_owned(&source_filter(), None).await;
     let error = result.err().expect("wrong metadata rejected");
     assert_eq!(error.get_code(), UCode::InvalidArgument);
 }
 
 #[tokio::test]
-async fn external_xcdrv2_payload_family_mismatch_is_rejected_before_pull_receive_exposes_frame() {
-    let core = ZenohWireCore::new();
+async fn owned_core_external_xcdrv2_payload_family_mismatch_is_rejected_before_pull_receive_exposes_frame(
+) {
+    let core = ZenohOwnedCore::new();
     let mut mismatched = XcdrV2Wire::encode_frame_metadata(&metadata(Some(XcdrV2Wire::encoding())))
         .expect("metadata to corrupt");
     mismatched[15..18].copy_from_slice(&[0x00, 0x02, 0x00]);
-    core.push_encoded_rx(ZenohEncodedRxFrame::new(
-        ZenohPreparedAttachment::from_encoded_metadata(mismatched),
-        b"drop".to_vec(),
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        mismatched,
+        Some(Bytes::from_static(b"drop")),
     ))
     .await;
-    let transport = core.with_wire(XcdrV2Wire);
+    let transport = core.with_selected_wire(XcdrV2Wire);
 
-    let result = transport.receive_zero_copy(&source_filter(), None).await;
+    let result = transport.receive_owned(&source_filter(), None).await;
     let error = result.err().expect("mismatch rejected");
     assert_eq!(error.get_code(), UCode::InvalidArgument);
 }
 
 #[tokio::test]
-async fn external_xcdrv2_malformed_listener_metadata_is_not_delivered() {
-    let core = ZenohWireCore::new();
-    let listener = Arc::new(CountingListener::default());
-    let transport = core.clone().with_wire(XcdrV2Wire);
-    transport
-        .register_zero_copy_listener(&source_filter(), None, listener.clone())
-        .await
-        .expect("register");
-
+async fn owned_core_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_frame() {
+    let core = ZenohOwnedCore::new();
     let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(Some(
         PayloadEncoding::Standard(UPayloadFormat::Protobuf),
     )))
     .expect("wrong metadata");
-    core.deliver_encoded_rx(ZenohEncodedRxFrame::new(
-        ZenohPreparedAttachment::from_encoded_metadata(wrong_metadata),
-        b"drop".to_vec(),
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        wrong_metadata,
+        Some(Bytes::from_static(b"drop")),
     ))
     .await;
+    let transport = core.with_selected_wire(UProtocolNativeWire);
 
-    assert_eq!(listener.payloads(), Vec::<Vec<u8>>::new());
-}
-
-#[tokio::test]
-async fn wrong_wire_metadata_is_rejected_before_pull_receive_exposes_frame() {
-    let core = ZenohWireCore::new();
-    let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(Some(
-        PayloadEncoding::Standard(UPayloadFormat::Protobuf),
-    )))
-    .expect("wrong metadata");
-    core.push_encoded_rx(ZenohEncodedRxFrame::new(
-        ZenohPreparedAttachment::from_encoded_metadata(wrong_metadata),
-        b"drop".to_vec(),
-    ))
-    .await;
-    let transport = core.with_wire(UProtocolNativeWire);
-
-    let result = transport.receive_zero_copy(&source_filter(), None).await;
+    let result = transport.receive_owned(&source_filter(), None).await;
     let error = result.err().expect("wrong metadata rejected");
     assert_eq!(error.get_code(), UCode::InvalidArgument);
 }
 
 #[tokio::test]
-async fn payload_family_mismatch_is_rejected_before_pull_receive_exposes_frame() {
-    let core = ZenohWireCore::new();
+async fn owned_core_payload_family_mismatch_is_rejected_before_pull_receive_exposes_frame() {
+    let core = ZenohOwnedCore::new();
     let mut mismatched =
         UProtocolNativeWire::encode_frame_metadata(&metadata(None)).expect("metadata to corrupt");
     mismatched[15..18].copy_from_slice(&[0x00, 0x02, 0x00]);
-    core.push_encoded_rx(ZenohEncodedRxFrame::new(
-        ZenohPreparedAttachment::from_encoded_metadata(mismatched),
-        b"drop".to_vec(),
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        mismatched,
+        Some(Bytes::from_static(b"drop")),
     ))
     .await;
-    let transport = core.with_wire(UProtocolNativeWire);
+    let transport = core.with_selected_wire(UProtocolNativeWire);
 
-    let result = transport.receive_zero_copy(&source_filter(), None).await;
+    let result = transport.receive_owned(&source_filter(), None).await;
     let error = result.err().expect("mismatch rejected");
     assert_eq!(error.get_code(), UCode::InvalidArgument);
-}
-
-#[tokio::test]
-async fn malformed_listener_metadata_is_not_delivered() {
-    let core = ZenohWireCore::new();
-    let listener = Arc::new(CountingListener::default());
-    let transport = core.clone().with_wire(UProtocolNativeWire);
-    transport
-        .register_zero_copy_listener(&source_filter(), None, listener.clone())
-        .await
-        .expect("register");
-
-    let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(Some(
-        PayloadEncoding::Standard(UPayloadFormat::Protobuf),
-    )))
-    .expect("wrong metadata");
-    core.deliver_encoded_rx(ZenohEncodedRxFrame::new(
-        ZenohPreparedAttachment::from_encoded_metadata(wrong_metadata),
-        b"drop".to_vec(),
-    ))
-    .await;
-
-    assert_eq!(listener.payloads(), Vec::<Vec<u8>>::new());
-}
-
-#[derive(Default)]
-struct CountingListener {
-    payloads: StdMutex<Vec<Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -320,24 +242,5 @@ impl UOwnedListener for CountingOwnedListener {
                 .payload()
                 .map_or_else(Vec::new, |payload| payload.to_vec()),
         );
-    }
-}
-
-impl CountingListener {
-    fn payloads(&self) -> Vec<Vec<u8>> {
-        self.payloads.lock().expect("payload lock").clone()
-    }
-}
-
-#[async_trait]
-impl<W> UZeroCopyListener<up_rust::UWireRx<ZenohEncodedRxFrame, W>> for CountingListener
-where
-    W: UWireMetadata + Send + Sync + 'static,
-{
-    async fn on_receive_zero_copy(&self, frame: up_rust::UWireRx<ZenohEncodedRxFrame, W>) {
-        self.payloads
-            .lock()
-            .expect("payload lock")
-            .push(frame.try_contiguous_payload().unwrap_or_default().to_vec());
     }
 }

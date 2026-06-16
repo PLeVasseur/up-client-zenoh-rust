@@ -14,17 +14,13 @@ pub mod rpc;
 pub mod uri_provider;
 pub mod utransport;
 pub mod wire_full;
-pub mod wire_smoke;
 #[cfg(feature = "zero-copy")]
 mod zero_copy;
 
 pub use rpc::ZenohRpcClient;
 pub use wire_full::{ZenohEncodedOwnedFrameLog, ZenohOwnedCore};
-#[cfg(not(feature = "zero-copy"))]
-pub use wire_smoke::ZenohTxBuffer;
-pub use wire_smoke::{ZenohEncodedRxFrame, ZenohPreparedAttachment, ZenohWireCore};
 #[cfg(feature = "zero-copy")]
-pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer};
+pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer, ZenohZeroCopyCore};
 
 use bitmask_enum::bitmask;
 #[cfg(feature = "zero-copy")]
