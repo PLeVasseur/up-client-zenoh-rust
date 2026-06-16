@@ -20,7 +20,9 @@ mod zero_copy;
 pub use rpc::ZenohRpcClient;
 pub use wire_full::{ZenohEncodedOwnedFrameLog, ZenohOwnedCore};
 #[cfg(feature = "zero-copy")]
-pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer, ZenohZeroCopyCore};
+pub use zero_copy::{
+    ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer, ZenohZeroCopyCore, ZenohZeroCopyCoreBuilder,
+};
 
 use bitmask_enum::bitmask;
 #[cfg(feature = "zero-copy")]
@@ -198,6 +200,18 @@ impl UPTransportZenoh {
                     format!("failed to initialize Zenoh SHM provider: {err}"),
                 )
             })
+    }
+
+    #[cfg(feature = "zero-copy")]
+    pub(crate) fn set_shm_segment_size(&mut self, shm_segment_size: usize) -> Result<(), UStatus> {
+        if shm_segment_size == 0 {
+            return Err(UStatus::fail_with_code(
+                UCode::InvalidArgument,
+                "Zenoh SHM segment size must be non-zero",
+            ));
+        }
+        self.shm_segment_size = shm_segment_size;
+        Ok(())
     }
 
     /// The function to enable tracing subscriber from the environment variables `RUST_LOG`.

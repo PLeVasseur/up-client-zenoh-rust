@@ -1,15 +1,33 @@
+/********************************************************************************
+ * Copyright (c) 2026 Contributors to the Eclipse Foundation
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Apache License Version 2.0 which is available at
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ ********************************************************************************/
+
+#![cfg(feature = "zero-copy")]
+
 use std::{io::Read, marker::PhantomData, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use serial_test::serial;
 use tokio::sync::mpsc;
 use up_rust::{
     PayloadEncoding, PayloadFormat, PayloadLoanProvenance, ProtobufWire, UCode, UFrameMetadata,
     UFrameView, ULoanedContiguousZeroCopyRxFrame, UMessageBuilder, UPayloadFormat,
-    UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri, UWireMetadata, UWireRx,
-    UZeroCopyListener, UZeroCopyTransport, UZeroCopyUninitTransport,
+    UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri, UWire, UWireMetadata,
+    UWireRx, UZeroCopyListener, UZeroCopyTransport, UZeroCopyUninitTransport,
+    NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, NATIVE_PREFIX_METADATA_LAYOUT_ID, PROTOBUF_WIRE_ID,
 };
 use up_transport_zenoh::{zenoh_config, ZenohRxFrame, ZenohZeroCopyCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
+use zenoh::bytes::ZBytes;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -25,21 +43,104 @@ fn source_wildcard(authority: &str) -> UUri {
     UUri::try_from_parts(authority, 0xFFFF_FFFF, 0xFF, 0xFFFF).expect("wildcard URI")
 }
 
+fn sink(authority: &str, resource_id: u16) -> UUri {
+    UUri::try_from_parts(authority, 0x4220, 0x01, resource_id).expect("sink URI")
+}
+
 fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMetadata {
     let message = UMessageBuilder::publish(source).build().expect("message");
     UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
 }
 
+fn notification_metadata(
+    source: UUri,
+    sink: UUri,
+    payload_encoding: Option<PayloadEncoding>,
+) -> UFrameMetadata {
+    let message = UMessageBuilder::notification(source, sink)
+        .build()
+        .expect("message");
+    UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
+}
+
 async fn test_core(authority: &str) -> ZenohZeroCopyCore {
-    ZenohZeroCopyCore::new(
-        zenoh_config::Config::default(),
-        format!("//{authority}/4210/1/0"),
-    )
-    .await
-    .expect("transport")
+    ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+        .with_config(zenoh_config::Config::default())
+        .with_shm_segment_size(1024 * 1024)
+        .expect("shm segment size")
+        .build()
+        .await
+        .expect("transport")
+}
+
+// Zenoh subscriber declarations are local futures; peer matching is propagated
+// asynchronously by Zenoh. Keep one bounded wait point so tests do not race the
+// first publication while still failing quickly on real delivery problems.
+async fn allow_subscriber_matching() {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
+async fn assert_no_payload_received(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>, message: &str) {
+    match tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+        Ok(Some(payload)) => panic!("{message}: received unexpected payload {payload:?}"),
+        Ok(None) | Err(_) => {}
+    }
+}
+
+fn zenoh_key(source: &UUri, sink: Option<&UUri>) -> String {
+    fn part(uri: &UUri) -> String {
+        let ue_id = if uri.has_wildcard_entity_type() || uri.has_wildcard_entity_instance() {
+            "*".to_string()
+        } else {
+            format!(
+                "{:X}",
+                (u32::from(uri.uentity_instance_id()) << 16) | u32::from(uri.uentity_type_id())
+            )
+        };
+        let version = if uri.has_wildcard_version() {
+            "*".to_string()
+        } else {
+            format!("{:X}", uri.uentity_major_version())
+        };
+        let resource = if uri.has_wildcard_resource_id() {
+            "*".to_string()
+        } else {
+            format!("{:X}", uri.resource_id())
+        };
+        format!("{}/{ue_id}/{version}/{resource}", uri.authority_name())
+    }
+
+    let destination = sink.map_or_else(|| "{}/{}/{}/{}".to_string(), part);
+    format!("up/{}/{destination}", part(source))
+}
+
+async fn publish_raw_zenoh(
+    source: &UUri,
+    sink: Option<&UUri>,
+    attachment: Vec<u8>,
+    payload: &[u8],
+) -> Result<(), TestError> {
+    let session = zenoh::open(zenoh_config::Config::default()).await?;
+    session
+        .put(zenoh_key(source, sink), ZBytes::from(payload.to_vec()))
+        .attachment(ZBytes::from(attachment))
+        .await?;
+    allow_subscriber_matching().await;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ProtobufWireWithNativePayloadFamily;
+
+impl UWire for ProtobufWireWithNativePayloadFamily {
+    const WIRE_ID: up_rust::WireIdentity = PROTOBUF_WIRE_ID;
+    const PAYLOAD_FAMILY_ID: up_rust::WireIdentity = NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID;
+    const METADATA_LAYOUT_ID: up_rust::WireIdentity = NATIVE_PREFIX_METADATA_LAYOUT_ID;
+    const FORMAT_VERSION: u16 = ProtobufWire::FORMAT_VERSION;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn zenoh_zero_copy_loan_uses_shm_and_selected_wire_attachment() -> Result<(), TestError> {
     assert_zero_copy_prepared_metadata::<UProtocolNativeWire>(None, &[]).await?;
     assert_zero_copy_prepared_metadata::<ProtobufWire>(
@@ -52,6 +153,18 @@ async fn zenoh_zero_copy_loan_uses_shm_and_selected_wire_attachment() -> Result<
         &VEHICLE_SIGNAL_V1_GOLDEN_BYTES,
     )
     .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_builder_rejects_zero_shm_segment_size() -> Result<(), TestError> {
+    let Err(error) =
+        ZenohZeroCopyCore::builder("//builder-invalid/4210/1/0").with_shm_segment_size(0)
+    else {
+        panic!("zero segment size should be rejected");
+    };
+    assert_eq!(error.get_code(), UCode::InvalidArgument);
     Ok(())
 }
 
@@ -88,6 +201,7 @@ where
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-rx-{}", std::process::id());
     let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
@@ -96,7 +210,7 @@ async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> 
     let receive_source = source.clone();
     let receive_task =
         tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    allow_subscriber_matching().await;
 
     let payload = b"rx-shm";
     let metadata = metadata(
@@ -124,6 +238,7 @@ async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn zero_copy_listener_fanout_delivers_rx_leases() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-listener-{}", std::process::id());
     let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
@@ -146,14 +261,15 @@ async fn zero_copy_listener_fanout_delivers_rx_leases() -> Result<(), TestError>
             Arc::new(PayloadSender::<ProtobufWire>::new(wildcard_tx)),
         )
         .await?;
+    allow_subscriber_matching().await;
 
     let payload = b"fanout";
-    let metadata = metadata(
+    let second_metadata = metadata(
         source,
         Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
     );
     let mut buffer = transport
-        .loan_tx(UTxLoanSpec::payload(metadata, payload.len(), 1)?)
+        .loan_tx(UTxLoanSpec::payload(second_metadata, payload.len(), 1)?)
         .await?;
     buffer.payload_mut().copy_from_slice(payload);
     transport.send_zero_copy(buffer).await?;
@@ -171,6 +287,78 @@ async fn zero_copy_listener_fanout_delivers_rx_leases() -> Result<(), TestError>
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_unregister_listener_removes_exact_and_wildcard_listeners(
+) -> Result<(), TestError> {
+    let authority = format!("zenoh-zcs-unregister-{}", std::process::id());
+    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let source = topic_for(&authority, 0x9306);
+    let wildcard = source_wildcard(&authority);
+    let (exact_tx, mut exact_rx) = mpsc::unbounded_channel();
+    let (wildcard_tx, mut wildcard_rx) = mpsc::unbounded_channel();
+    let exact_listener = Arc::new(PayloadSender::<ProtobufWire>::new(exact_tx));
+    let wildcard_listener = Arc::new(PayloadSender::<ProtobufWire>::new(wildcard_tx));
+
+    transport
+        .register_zero_copy_listener(&source, None, exact_listener.clone())
+        .await?;
+    transport
+        .register_zero_copy_listener(&wildcard, None, wildcard_listener.clone())
+        .await?;
+    allow_subscriber_matching().await;
+
+    transport
+        .unregister_zero_copy_listener(&source, None, exact_listener)
+        .await?;
+    allow_subscriber_matching().await;
+    let payload = b"wildcard-only";
+    let first_metadata = metadata(
+        source.clone(),
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+    );
+    let mut buffer = transport
+        .loan_tx(UTxLoanSpec::payload(first_metadata, payload.len(), 1)?)
+        .await?;
+    buffer.payload_mut().copy_from_slice(payload);
+    transport.send_zero_copy(buffer).await?;
+
+    assert_no_payload_received(
+        &mut exact_rx,
+        "unregistered exact listener should not receive",
+    )
+    .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), wildcard_rx.recv())
+            .await?
+            .expect("wildcard listener should receive"),
+        payload
+    );
+
+    transport
+        .unregister_zero_copy_listener(&wildcard, None, wildcard_listener)
+        .await?;
+    allow_subscriber_matching().await;
+    let payload = b"no-listeners";
+    let second_metadata = metadata(
+        source,
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+    );
+    let mut buffer = transport
+        .loan_tx(UTxLoanSpec::payload(second_metadata, payload.len(), 1)?)
+        .await?;
+    buffer.payload_mut().copy_from_slice(payload);
+    transport.send_zero_copy(buffer).await?;
+
+    assert_no_payload_received(
+        &mut wildcard_rx,
+        "unregistered wildcard listener should not receive",
+    )
+    .await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn zero_copy_uninit_transmit_uses_selected_wire_metadata() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-uninit-{}", std::process::id());
     let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
@@ -179,7 +367,7 @@ async fn zero_copy_uninit_transmit_uses_selected_wire_metadata() -> Result<(), T
     let receive_source = source.clone();
     let receive_task =
         tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    allow_subscriber_matching().await;
 
     let payload = b"uninit";
     let metadata = metadata(
@@ -203,6 +391,7 @@ async fn zero_copy_uninit_transmit_uses_selected_wire_metadata() -> Result<(), T
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn zero_copy_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_frame(
 ) -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-wrong-wire-{}", std::process::id());
@@ -216,7 +405,7 @@ async fn zero_copy_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_f
     let receive_source = source.clone();
     let receive_task =
         tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    allow_subscriber_matching().await;
 
     let payload = b"wrong";
     let metadata = metadata(
@@ -238,6 +427,70 @@ async fn zero_copy_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_f
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_payload_family_mismatch_is_rejected_before_pull_receive_exposes_frame(
+) -> Result<(), TestError> {
+    let authority = format!("zenoh-zcs-family-mismatch-{}", std::process::id());
+    let sender = Arc::new(
+        test_core(&authority)
+            .await
+            .with_selected_wire(ProtobufWireWithNativePayloadFamily),
+    );
+    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let source = topic_for(&authority, 0x9307);
+    let metadata = metadata(
+        source.clone(),
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+    );
+    let receive_source = source.clone();
+    let receive_task =
+        tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+    allow_subscriber_matching().await;
+
+    let payload = b"family-mismatch";
+    let mut buffer = sender
+        .loan_tx(UTxLoanSpec::payload(metadata, payload.len(), 1)?)
+        .await?;
+    buffer.payload_mut().copy_from_slice(payload);
+    sender.send_zero_copy(buffer).await?;
+
+    let error = tokio::time::timeout(Duration::from_secs(5), receive_task)
+        .await??
+        .err()
+        .expect("payload-family mismatch rejected");
+    assert_eq!(error.get_code(), UCode::InvalidArgument);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame(
+) -> Result<(), TestError> {
+    let authority = format!("zenoh-zcs-non-shm-{}", std::process::id());
+    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let source = topic_for(&authority, 0x9308);
+    let metadata = metadata(
+        source.clone(),
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+    );
+    let attachment = ProtobufWire::encode_frame_metadata(&metadata)?;
+    let receive_source = source.clone();
+    let receive_task =
+        tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
+    allow_subscriber_matching().await;
+
+    publish_raw_zenoh(&source, None, attachment, b"not-shm").await?;
+
+    let error = tokio::time::timeout(Duration::from_secs(5), receive_task)
+        .await??
+        .err()
+        .expect("non-SHM payload rejected");
+    assert_eq!(error.get_code(), UCode::FailedPrecondition);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn zero_copy_malformed_listener_metadata_is_not_delivered() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-listener-drop-{}", std::process::id());
     let sender = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
@@ -256,6 +509,7 @@ async fn zero_copy_malformed_listener_metadata_is_not_delivered() -> Result<(), 
             Arc::new(PayloadSender::<UProtocolNativeWire>::new(dropped_tx)),
         )
         .await?;
+    allow_subscriber_matching().await;
 
     let payload = b"drop";
     let metadata = metadata(
@@ -278,6 +532,85 @@ async fn zero_copy_malformed_listener_metadata_is_not_delivered() -> Result<(), 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), TestError> {
+    let authority = format!("zenoh-zcs-listener-non-shm-{}", std::process::id());
+    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let source = topic_for(&authority, 0x9309);
+    let (dropped_tx, mut dropped_rx) = mpsc::unbounded_channel();
+
+    receiver
+        .register_zero_copy_listener(
+            &source,
+            None,
+            Arc::new(PayloadSender::<ProtobufWire>::new(dropped_tx)),
+        )
+        .await?;
+    allow_subscriber_matching().await;
+
+    let metadata = metadata(
+        source.clone(),
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+    );
+    publish_raw_zenoh(
+        &source,
+        None,
+        ProtobufWire::encode_frame_metadata(&metadata)?,
+        b"not-shm-listener",
+    )
+    .await?;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), dropped_rx.recv())
+            .await
+            .is_err(),
+        "non-SHM listener frame should be dropped"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn zero_copy_sink_filter_mismatch_is_not_delivered_to_pull_receive() -> Result<(), TestError>
+{
+    let authority = format!("zenoh-zcs-sink-filter-{}", std::process::id());
+    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let source = topic_for(&authority, 0x930A);
+    let matching_sink = sink(&authority, 0);
+    let nonmatching_sink = sink(&format!("{authority}-other"), 0);
+    let receiver = transport.clone();
+    let receive_source = source.clone();
+    let receive_sink = nonmatching_sink.clone();
+    let receive_task = tokio::spawn(async move {
+        receiver
+            .receive_zero_copy(&receive_source, Some(&receive_sink))
+            .await
+    });
+    allow_subscriber_matching().await;
+
+    let payload = b"sink-filter";
+    let metadata = notification_metadata(
+        source,
+        matching_sink,
+        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+    );
+    let mut buffer = transport
+        .loan_tx(UTxLoanSpec::payload(metadata, payload.len(), 1)?)
+        .await?;
+    buffer.payload_mut().copy_from_slice(payload);
+    transport.send_zero_copy(buffer).await?;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), receive_task)
+            .await
+            .is_err(),
+        "nonmatching sink filter should not receive the frame"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn zero_copy_external_xcdrv2_wrong_wire_metadata_is_rejected() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-xcdr-wrong-wire-{}", std::process::id());
     let sender = Arc::new(test_core(&authority).await.with_selected_wire(XcdrV2Wire));
@@ -286,7 +619,7 @@ async fn zero_copy_external_xcdrv2_wrong_wire_metadata_is_rejected() -> Result<(
     let receive_source = source.clone();
     let receive_task =
         tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    allow_subscriber_matching().await;
 
     let metadata = metadata(source, Some(XcdrV2Wire::encoding()));
     let mut buffer = sender
@@ -334,6 +667,6 @@ where
             .payload_reader()
             .read_to_end(&mut payload)
             .expect("payload reader should succeed");
-        self.sender.send(payload).expect("receiver should be open");
+        let _ = self.sender.send(payload);
     }
 }

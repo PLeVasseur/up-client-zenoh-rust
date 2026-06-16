@@ -1,3 +1,16 @@
+/********************************************************************************
+ * Copyright (c) 2026 Contributors to the Eclipse Foundation
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Apache License Version 2.0 which is available at
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ ********************************************************************************/
+
 use std::{
     hash::{Hash, Hasher},
     mem::MaybeUninit,
@@ -24,19 +37,47 @@ use zenoh::{
 use crate::UPTransportZenoh;
 
 /// Real Zenoh SHM zero-copy selected-wire transport core.
+///
+/// `UPTransportZenoh` remains the ordinary product [`up_rust::UTransport`]
+/// implementation. This core owns a separate Zenoh transport instance for the
+/// generic selected-wire zero-copy adapter, carrying already encoded selected
+/// wire metadata as Zenoh attachment bytes and admitting received payload bytes
+/// only when Zenoh reports SHM backing.
 pub struct ZenohZeroCopyCore {
     inner: UPTransportZenoh,
 }
 
+/// Builder for [`ZenohZeroCopyCore`].
+///
+/// The builder keeps zero-copy SHM configuration on the selected-wire core
+/// construction path instead of making the legacy `UPTransportZenoh` API the
+/// primary zero-copy surface.
+pub struct ZenohZeroCopyCoreBuilder {
+    config: crate::zenoh_config::Config,
+    uri: String,
+    shm_segment_size: Option<usize>,
+}
+
 impl ZenohZeroCopyCore {
     /// Creates a zero-copy core with its own Zenoh transport internals.
+    ///
+    /// This is a convenience wrapper around [`Self::builder`]. Use the builder
+    /// when tests or deployments need to tune the SHM segment size.
     pub async fn new(
         config: crate::zenoh_config::Config,
         uri: impl Into<String>,
     ) -> Result<Self, UStatus> {
-        Ok(Self {
-            inner: UPTransportZenoh::new(config, uri).await?,
-        })
+        Self::builder(uri).with_config(config).build().await
+    }
+
+    /// Starts a builder for an independently constructed zero-copy core.
+    #[must_use]
+    pub fn builder(uri: impl Into<String>) -> ZenohZeroCopyCoreBuilder {
+        ZenohZeroCopyCoreBuilder {
+            config: crate::zenoh_config::Config::default(),
+            uri: uri.into(),
+            shm_segment_size: None,
+        }
     }
 
     /// Wraps this core in the generic selected-wire adapter.
@@ -46,6 +87,45 @@ impl ZenohZeroCopyCore {
         W: UWire,
     {
         self.with_wire(wire)
+    }
+}
+
+impl ZenohZeroCopyCoreBuilder {
+    /// Overrides the Zenoh configuration used to open the core's session.
+    #[must_use]
+    pub fn with_config(mut self, config: crate::zenoh_config::Config) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Overrides the SHM provider segment size used by transmit loans.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UCode::InvalidArgument`] when `shm_segment_size` is zero.
+    pub fn with_shm_segment_size(mut self, shm_segment_size: usize) -> Result<Self, UStatus> {
+        if shm_segment_size == 0 {
+            return Err(UStatus::fail_with_code(
+                UCode::InvalidArgument,
+                "Zenoh SHM segment size must be non-zero",
+            ));
+        }
+        self.shm_segment_size = Some(shm_segment_size);
+        Ok(self)
+    }
+
+    /// Builds the selected-wire zero-copy core.
+    ///
+    /// # Errors
+    ///
+    /// Returns a status when the Zenoh session, URI validation, or SHM
+    /// configuration fails.
+    pub async fn build(self) -> Result<ZenohZeroCopyCore, UStatus> {
+        let mut inner = UPTransportZenoh::new(self.config, self.uri).await?;
+        if let Some(shm_segment_size) = self.shm_segment_size {
+            inner.set_shm_segment_size(shm_segment_size)?;
+        }
+        Ok(ZenohZeroCopyCore { inner })
     }
 }
 
@@ -351,7 +431,8 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         listener: Arc<dyn UEncodedZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
         let zenoh_key = self.inner.to_zenoh_key_string(source_filter, sink_filter);
-        self.inner
+        let subscriber = self
+            .inner
             .zero_copy_subscriber_map
             .lock()
             .await
@@ -359,6 +440,12 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
             .ok_or_else(|| {
                 UStatus::fail_with_code(UCode::NotFound, "zero-copy listener not registered")
             })?;
+        subscriber.undeclare().await.map_err(|err| {
+            UStatus::fail_with_code(
+                UCode::Internal,
+                format!("failed to undeclare zero-copy listener: {err}"),
+            )
+        })?;
         Ok(())
     }
 }
