@@ -39,6 +39,7 @@ pedantic = "deny"
 anyhow = "1.0.75"
 async-trait = "0.1"
 bitmask-enum = "2.2.4"
+bytes = "1"
 chrono = "0.4.31"
 crossbeam-channel = "0.5.12"
 lazy_static = "1.4.0"
@@ -50,7 +51,7 @@ tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 up-rust = "0.1.5"
-up-rust-userializer = { package = "up-rust", git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "26d70ef45af61fdd17d3e130845a5be155154b2e" }
+up-rust-userializer = { package = "up-rust", git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "26d70ef45af61fdd17d3e130845a5be155154b2e", features = ["owned-frame-transport"] }
 zenoh = { version = "0.11.0", features = ["unstable"]}
 
 [dev-dependencies]

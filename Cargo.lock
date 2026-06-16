@@ -2800,6 +2800,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bitmask-enum",
+ "bytes",
  "chrono",
  "crossbeam-channel",
  "lazy_static",

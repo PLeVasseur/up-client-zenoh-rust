@@ -1,12 +1,16 @@
 use std::{sync::Arc, sync::Mutex as StdMutex};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use up_rust_userializer::{
-    PayloadEncoding, PayloadFormat, ProtobufWire, UCode, UFrameMetadata, UFrameView,
-    UMessageBuilder, UPayloadFormat, UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUri,
-    UWireMetadata, UWithWire, UZeroCopyListener, UZeroCopyTransport,
+    EncodedOwnedFrame, PayloadEncoding, PayloadFormat, ProtobufWire, UCode, UFrameMetadata,
+    UFrameView, UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat,
+    UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUri, UWireMetadata, UWithWire, UZeroCopyListener,
+    UZeroCopyTransport,
 };
-use up_transport_zenoh::{ZenohEncodedRxFrame, ZenohPreparedAttachment, ZenohWireCore};
+use up_transport_zenoh::{
+    ZenohEncodedRxFrame, ZenohOwnedCore, ZenohPreparedAttachment, ZenohWireCore,
+};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
 
 fn topic() -> UUri {
@@ -110,6 +114,66 @@ async fn external_xcdrv2_bytes_round_trip_through_pull_receive() {
         rx.try_contiguous_payload(),
         Some(&VEHICLE_SIGNAL_V1_GOLDEN_BYTES[..])
     );
+}
+
+#[tokio::test]
+async fn owned_core_carries_prepared_metadata_bytes() {
+    let core = ZenohOwnedCore::new();
+    let transport = core.clone().with_wire(ProtobufWire);
+    let frame_metadata = metadata(Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)));
+    let frame = UOwnedFrame::with_payload(frame_metadata.clone(), Bytes::from_static(b"data"))
+        .expect("owned frame");
+
+    transport.send_owned(frame).await.expect("send owned");
+
+    let sent = core.last_sent().await.expect("prepared owned frame");
+    assert_eq!(sent.payload(), Some(&b"data"[..]));
+    assert_eq!(
+        ProtobufWire::decode_frame_metadata(sent.encoded_metadata()).expect("decode metadata"),
+        frame_metadata
+    );
+}
+
+#[tokio::test]
+async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() {
+    let core = ZenohOwnedCore::new();
+    let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(Some(
+        PayloadEncoding::Standard(UPayloadFormat::Protobuf),
+    )))
+    .expect("wrong metadata");
+    core.push_encoded_owned(EncodedOwnedFrame::new(
+        wrong_metadata,
+        Some(Bytes::from_static(b"drop")),
+    ))
+    .await;
+    let transport = core.with_wire(UProtocolNativeWire);
+
+    let result = transport.receive_owned(&source_filter(), None).await;
+    let error = result.err().expect("wrong metadata rejected");
+    assert_eq!(error.get_code(), UCode::InvalidArgument);
+}
+
+#[tokio::test]
+async fn owned_core_malformed_listener_metadata_is_not_delivered() {
+    let core = ZenohOwnedCore::new();
+    let listener = Arc::new(CountingOwnedListener::default());
+    let transport = core.clone().with_wire(UProtocolNativeWire);
+    transport
+        .register_owned_listener(&source_filter(), None, listener.clone())
+        .await
+        .expect("register");
+
+    let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(Some(
+        PayloadEncoding::Standard(UPayloadFormat::Protobuf),
+    )))
+    .expect("wrong metadata");
+    core.deliver_encoded_owned(EncodedOwnedFrame::new(
+        wrong_metadata,
+        Some(Bytes::from_static(b"drop")),
+    ))
+    .await;
+
+    assert_eq!(listener.payloads(), Vec::<Vec<u8>>::new());
 }
 
 #[tokio::test]
@@ -235,6 +299,28 @@ async fn malformed_listener_metadata_is_not_delivered() {
 #[derive(Default)]
 struct CountingListener {
     payloads: StdMutex<Vec<Vec<u8>>>,
+}
+
+#[derive(Default)]
+struct CountingOwnedListener {
+    payloads: StdMutex<Vec<Vec<u8>>>,
+}
+
+impl CountingOwnedListener {
+    fn payloads(&self) -> Vec<Vec<u8>> {
+        self.payloads.lock().expect("payload lock").clone()
+    }
+}
+
+#[async_trait]
+impl UOwnedListener for CountingOwnedListener {
+    async fn on_receive_owned(&self, frame: UOwnedFrame) {
+        self.payloads.lock().expect("payload lock").push(
+            frame
+                .payload()
+                .map_or_else(Vec::new, |payload| payload.to_vec()),
+        );
+    }
 }
 
 impl CountingListener {
