@@ -52,24 +52,18 @@ impl RequestListener {
 #[async_trait]
 impl UListener for RequestListener {
     async fn on_receive(&self, msg: UMessage) {
-        let UMessage {
-            attributes,
-            payload,
-            ..
-        } = msg;
+        let attributes = msg.attributes().clone();
         // Check the payload of request
-        let value = payload
-            .unwrap()
-            .into_iter()
-            .map(|c| c as char)
+        let value = msg
+            .payload()
+            .expect("payload")
+            .iter()
+            .map(|c| *c as char)
             .collect::<String>();
         assert_eq!(self.request_data, value);
         // Send back result
         let umessage = UMessageBuilder::response_for_request(&attributes)
-            .build_with_payload(
-                self.response_data.clone(),
-                UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-            )
+            .build_with_payload(self.response_data.clone(), UPayloadFormat::Text)
             .unwrap();
         task::block_in_place(|| {
             Handle::current()
@@ -96,12 +90,12 @@ impl ResponseListener {
 #[async_trait]
 impl UListener for ResponseListener {
     async fn on_receive(&self, msg: UMessage) {
-        let UMessage { payload, .. } = msg;
         // Check the response data
-        let value = payload
-            .unwrap()
-            .into_iter()
-            .map(|c| c as char)
+        let value = msg
+            .payload()
+            .expect("payload")
+            .iter()
+            .map(|c| *c as char)
             .collect::<String>();
         *self.response_data.lock().unwrap() = value;
     }
@@ -151,15 +145,12 @@ async fn test_rpc_server_client(
     {
         let rpc_client = Arc::new(ZenohRpcClient::new(uptransport_client.clone()));
 
-        let payload = UPayload::new(
-            request_data.clone().into(),
-            UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-        );
+        let payload = UPayload::new(request_data.clone(), UPayloadFormat::Text);
         let call_options = CallOptions::for_rpc_request(
             5_000,
             Some(UUID::build()),
             Some("my_token".to_string()),
-            Some(UPriority::UPRIORITY_CS6),
+            Some(UPriority::CS6),
         );
         let result = rpc_client
             .invoke_method(sink_uuri.clone(), call_options, Some(payload))
@@ -183,7 +174,7 @@ async fn test_rpc_server_client(
 
         // Send request
         let umessage = UMessageBuilder::request(sink_uuri.clone(), src_uuri.clone(), 1000)
-            .build_with_payload(request_data.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+            .build_with_payload(request_data.clone(), UPayloadFormat::Text)
             .unwrap();
         uptransport_client.send(umessage).await.unwrap();
 

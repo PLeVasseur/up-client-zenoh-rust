@@ -33,7 +33,7 @@ impl DelayListener {
 #[async_trait]
 impl UListener for DelayListener {
     async fn on_receive(&self, msg: UMessage) {
-        let payload = msg.payload.unwrap();
+        let payload = msg.payload().expect("payload").to_vec();
         let value = payload.into_iter().map(|c| c as char).collect::<String>();
         // Delay the receive time of the first message
         if value == "Pub 0" {
@@ -68,10 +68,10 @@ async fn test_blocking_user_callback() {
 
     // Send 2 UMessage
     let umsg0 = UMessageBuilder::publish(pub_uuri.clone())
-        .build_with_payload("Pub 0", UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+        .build_with_payload("Pub 0", UPayloadFormat::Text)
         .unwrap();
     let umsg1 = UMessageBuilder::publish(pub_uuri.clone())
-        .build_with_payload("Pub 1", UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+        .build_with_payload("Pub 1", UPayloadFormat::Text)
         .unwrap();
     uptransport_send.send(umsg0).await.unwrap();
     uptransport_send.send(umsg1).await.unwrap();

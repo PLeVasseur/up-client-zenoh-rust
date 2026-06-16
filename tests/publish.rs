@@ -39,7 +39,7 @@ impl PublishNotificationListener {
 #[async_trait]
 impl UListener for PublishNotificationListener {
     async fn on_receive(&self, msg: UMessage) {
-        let data = msg.payload.unwrap();
+        let data = msg.payload().expect("payload").to_vec();
         let value = data.into_iter().map(|c| c as char).collect::<String>();
         *self.recv_data.lock().unwrap() = value;
     }
@@ -71,7 +71,7 @@ async fn test_publish_and_subscribe(src_uuri: &str, resource_id: u16, listen_uur
 
     // Send UMessage
     let umessage = UMessageBuilder::publish(publish_uuri)
-        .build_with_payload(target_data.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+        .build_with_payload(target_data.clone(), UPayloadFormat::Text)
         .unwrap();
     uptransport_send.send(umessage).await.unwrap();
 
@@ -127,7 +127,7 @@ async fn test_notification_and_subscribe(
 
     // Send UMessage
     let umessage = UMessageBuilder::notification(src_uuri, sink_uuri)
-        .build_with_payload(target_data.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+        .build_with_payload(target_data.clone(), UPayloadFormat::Text)
         .unwrap();
     uptransport_sender.send(umessage).await.unwrap();
 

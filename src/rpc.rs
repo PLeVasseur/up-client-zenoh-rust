@@ -16,10 +16,9 @@ use std::{string::ToString, sync::Arc, time::Duration};
 use tracing::error;
 use up_rust::{
     communication::{CallOptions, RpcClient, ServiceInvocationError, UPayload},
-    LocalUriProvider, UAttributes, UCode, UMessageType, UPayloadFormat, UPriority, UStatus, UUri,
-    UUID,
+    LocalUriProvider, UCode, UMessageBuilder, UPayloadFormat, UStatus, UUri,
 };
-use zenoh::prelude::r#async::*;
+use zenoh::query::QueryTarget;
 
 pub struct ZenohRpcClient {
     transport: Arc<UPTransportZenoh>,
@@ -43,31 +42,29 @@ impl RpcClient for ZenohRpcClient {
         call_options: CallOptions,
         payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // Get data and format from UPayload
-        let mut payload_data = None;
-        let mut payload_format = UPayloadFormat::UPAYLOAD_FORMAT_UNSPECIFIED;
-        if let Some(payload) = payload {
-            payload_format = payload.payload_format();
-            payload_data = Some(payload.payload());
-        }
-
         // Get source UUri
         let source_uri = self.transport.get_source_uri();
 
-        let attributes = UAttributes {
-            type_: UMessageType::UMESSAGE_TYPE_REQUEST.into(),
-            id: Some(call_options.message_id().unwrap_or_else(UUID::build)).into(),
-            priority: call_options
-                .priority()
-                .unwrap_or(UPriority::UPRIORITY_CS4)
-                .into(),
-            source: Some(source_uri.clone()).into(),
-            sink: Some(method.clone()).into(),
-            ttl: Some(call_options.ttl()),
-            token: call_options.token(),
-            payload_format: payload_format.into(),
-            ..Default::default()
-        };
+        let mut builder =
+            UMessageBuilder::request(method.clone(), source_uri.clone(), call_options.ttl());
+        if let Some(message_id) = call_options.message_id() {
+            builder.with_message_id(message_id.clone());
+        }
+        if let Some(priority) = call_options.priority() {
+            builder.with_priority(priority);
+        }
+        if let Some(token) = call_options.token() {
+            builder.with_token(token.clone());
+        }
+        let message = if let Some(payload) = payload {
+            let payload_format = payload.payload_format();
+            builder.build_with_payload(payload.payload(), payload_format)
+        } else {
+            builder.build()
+        }
+        .map_err(|err| ServiceInvocationError::Internal(err.to_string()))?;
+        let attributes = message.attributes().clone();
+        let payload_data = message.payload().map(|payload| payload.to_vec());
 
         // Get Zenoh key
         let zenoh_key = self
@@ -84,51 +81,45 @@ impl RpcClient for ZenohRpcClient {
         // Send the query
         let mut getbuilder = self.transport.session.get(&zenoh_key);
         getbuilder = match payload_data {
-            Some(data) => getbuilder.with_value(data.as_ref()),
+            Some(data) => getbuilder.payload(data),
             None => getbuilder,
         }
-        .with_attachment(attachment.build())
+        .attachment(attachment)
         .target(QueryTarget::BestMatching)
         .timeout(Duration::from_millis(u64::from(call_options.ttl())));
-        let Ok(replies) = getbuilder.res().await else {
+        let Ok(replies) = getbuilder.await else {
             let msg = "Error while sending Zenoh query".to_string();
             error!("{msg}");
-            return Err(ServiceInvocationError::RpcError(UStatus {
-                code: UCode::INTERNAL.into(),
-                message: Some(msg),
-                ..Default::default()
-            }));
+            return Err(ServiceInvocationError::RpcError(Box::new(
+                UStatus::fail_with_code(UCode::Internal, msg),
+            )));
         };
 
         // Receive the reply
         let Ok(reply) = replies.recv_async().await else {
             let msg = "Error while receiving Zenoh reply".to_string();
             error!("{msg}");
-            return Err(ServiceInvocationError::RpcError(UStatus {
-                code: UCode::INTERNAL.into(),
-                message: Some(msg),
-                ..Default::default()
-            }));
+            return Err(ServiceInvocationError::RpcError(Box::new(
+                UStatus::fail_with_code(UCode::Internal, msg),
+            )));
         };
-        match reply.sample {
+        match reply.into_result() {
             Ok(sample) => {
                 let payload_format = sample
                     .attachment()
                     .and_then(|a| UPTransportZenoh::attachment_to_uattributes(a).ok())
-                    .map(|attr| attr.payload_format.enum_value_or_default());
+                    .and_then(|attr| attr.payload_format());
                 Ok(Some(UPayload::new(
-                    sample.payload.contiguous().to_vec().into(),
-                    payload_format.unwrap_or_default(),
+                    sample.payload().to_bytes().to_vec(),
+                    payload_format.unwrap_or(UPayloadFormat::Unspecified),
                 )))
             }
             Err(e) => {
                 let msg = format!("Error while parsing Zenoh reply: {e:?}");
                 error!("{msg}");
-                return Err(ServiceInvocationError::RpcError(UStatus {
-                    code: UCode::INTERNAL.into(),
-                    message: Some(msg),
-                    ..Default::default()
-                }));
+                Err(ServiceInvocationError::RpcError(Box::new(
+                    UStatus::fail_with_code(UCode::Internal, msg),
+                )))
             }
         }
     }

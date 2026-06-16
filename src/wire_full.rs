@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use up_rust_userializer::{
+use up_rust::{
     EncodedOwnedFrame, PreparedOwnedFrame, UCode, UEncodedOwnedListener, UOwnedTransportCore,
     UStatus, UWire, UWireTransport, UWithWire,
 };
@@ -96,8 +96,8 @@ impl UOwnedTransportCore for ZenohOwnedCore {
 
     async fn receive_encoded_owned(
         &self,
-        _source_filter: &up_rust_userializer::UUri,
-        _sink_filter: Option<&up_rust_userializer::UUri>,
+        _source_filter: &up_rust::UUri,
+        _sink_filter: Option<&up_rust::UUri>,
     ) -> Result<EncodedOwnedFrame, UStatus> {
         self.state
             .lock()
@@ -109,8 +109,8 @@ impl UOwnedTransportCore for ZenohOwnedCore {
 
     async fn register_encoded_owned_listener(
         &self,
-        _source_filter: &up_rust_userializer::UUri,
-        _sink_filter: Option<&up_rust_userializer::UUri>,
+        _source_filter: &up_rust::UUri,
+        _sink_filter: Option<&up_rust::UUri>,
         listener: Arc<dyn UEncodedOwnedListener>,
     ) -> Result<(), UStatus> {
         self.state.lock().await.listeners.push(listener);
@@ -119,8 +119,8 @@ impl UOwnedTransportCore for ZenohOwnedCore {
 
     async fn unregister_encoded_owned_listener(
         &self,
-        _source_filter: &up_rust_userializer::UUri,
-        _sink_filter: Option<&up_rust_userializer::UUri>,
+        _source_filter: &up_rust::UUri,
+        _sink_filter: Option<&up_rust::UUri>,
         listener: Arc<dyn UEncodedOwnedListener>,
     ) -> Result<(), UStatus> {
         let mut state = self.state.lock().await;

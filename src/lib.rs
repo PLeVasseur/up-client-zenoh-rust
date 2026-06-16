@@ -15,13 +15,20 @@ pub mod uri_provider;
 pub mod utransport;
 pub mod wire_full;
 pub mod wire_smoke;
+#[cfg(feature = "zero-copy")]
+mod zero_copy;
 
 pub use rpc::ZenohRpcClient;
 pub use wire_full::{ZenohEncodedOwnedFrameLog, ZenohOwnedCore};
-pub use wire_smoke::{ZenohEncodedRxFrame, ZenohPreparedAttachment, ZenohTxBuffer, ZenohWireCore};
+#[cfg(not(feature = "zero-copy"))]
+pub use wire_smoke::ZenohTxBuffer;
+pub use wire_smoke::{ZenohEncodedRxFrame, ZenohPreparedAttachment, ZenohWireCore};
+#[cfg(feature = "zero-copy")]
+pub use zero_copy::{ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer};
 
 use bitmask_enum::bitmask;
-use protobuf::Message;
+#[cfg(feature = "zero-copy")]
+use std::sync::OnceLock;
 use std::{
     collections::HashMap,
     str::FromStr,
@@ -30,16 +37,23 @@ use std::{
 use tokio::runtime::Runtime;
 use tracing::error;
 use up_rust::{
-    ComparableListener, LocalUriProvider, UAttributes, UCode, UListener, UPriority, UStatus, UUri,
+    ComparableListener, LocalUriProvider, ProtobufMappable, UAttributes, UCode, UListener,
+    UPriority, UStatus, UUri,
 };
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
 use zenoh::{
-    prelude::r#async::*,
-    queryable::{Query, Queryable},
-    runtime::Runtime as ZRuntime,
-    sample::{Attachment, AttachmentBuilder},
-    subscriber::Subscriber,
+    bytes::ZBytes,
+    key_expr::OwnedKeyExpr,
+    pubsub::Subscriber,
+    qos::Priority,
+    query::{Query, Queryable},
+    Session,
+};
+#[cfg(feature = "zero-copy")]
+use zenoh::{
+    shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
+    Wait,
 };
 
 const UATTRIBUTE_VERSION: u8 = 1;
@@ -62,10 +76,18 @@ enum MessageFlag {
     Response,
 }
 
-type SubscriberMap = Arc<Mutex<HashMap<(String, ComparableListener), Subscriber<'static, ()>>>>;
-type QueryableMap = Arc<Mutex<HashMap<(String, ComparableListener), Queryable<'static, ()>>>>;
+type SubscriberMap = Arc<Mutex<HashMap<(String, ComparableListener), Subscriber<()>>>>;
+type QueryableMap = Arc<Mutex<HashMap<(String, ComparableListener), Queryable<()>>>>;
 type QueryMap = Arc<Mutex<HashMap<String, Query>>>;
 type RpcCallbackMap = Arc<Mutex<HashMap<OwnedKeyExpr, Arc<dyn UListener>>>>;
+#[cfg(feature = "zero-copy")]
+type ZeroCopySubscriberMap = Arc<
+    tokio::sync::Mutex<HashMap<(String, zero_copy::ComparableZeroCopyListener), Subscriber<()>>>,
+>;
+#[cfg(feature = "zero-copy")]
+type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
+#[cfg(feature = "zero-copy")]
+type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 pub struct UPTransportZenoh {
     session: Arc<Session>,
     // Able to unregister Subscriber
@@ -78,7 +100,16 @@ pub struct UPTransportZenoh {
     rpc_callback_map: RpcCallbackMap,
     // URI
     uri: UUri,
+    #[cfg(feature = "zero-copy")]
+    shm_segment_size: usize,
+    #[cfg(feature = "zero-copy")]
+    shm_provider: OnceLock<ZenohShmProviderInit>,
+    #[cfg(feature = "zero-copy")]
+    zero_copy_subscriber_map: ZeroCopySubscriberMap,
 }
+
+#[cfg(feature = "zero-copy")]
+const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
 impl UPTransportZenoh {
     /// Create `UPTransportZenoh` by applying the Zenoh configuration, local `UUri`.
@@ -108,31 +139,10 @@ impl UPTransportZenoh {
         uri: impl Into<String>,
     ) -> Result<UPTransportZenoh, UStatus> {
         // Create Zenoh session
-        let Ok(session) = zenoh::open(config).res().await else {
+        let Ok(session) = zenoh::open(config).await else {
             let msg = "Unable to open Zenoh session".to_string();
             error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::INTERNAL, msg));
-        };
-        UPTransportZenoh::init_with_session(session, uri)
-    }
-
-    /// Create `UPTransportZenoh` by applying the Zenoh Runtime and local `UUri`. This can be used by uStreamer.
-    ///
-    /// # Arguments
-    ///
-    /// * `runtime` - Zenoh Runtime.
-    /// * `uri` - Local `UUri`. Note that the Authority of the `UUri` MUST be non-empty and the resource ID should be non-zero.
-    ///
-    /// # Errors
-    /// Will return `Err` if unable to create `UPTransportZenoh`
-    pub async fn new_with_runtime(
-        runtime: ZRuntime,
-        uri: impl Into<String>,
-    ) -> Result<UPTransportZenoh, UStatus> {
-        let Ok(session) = zenoh::init(runtime).res().await else {
-            let msg = "Unable to open Zenoh session".to_string();
-            error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::INTERNAL, msg));
+            return Err(UStatus::fail_with_code(UCode::Internal, msg));
         };
         UPTransportZenoh::init_with_session(session, uri)
     }
@@ -145,19 +155,19 @@ impl UPTransportZenoh {
         let uri = UUri::from_str(&uri.into()).map_err(|_| {
             let msg = "Unable to transform the uri to UUri".to_string();
             error!("{msg}");
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg)
+            UStatus::fail_with_code(UCode::InvalidArgument, msg)
         })?;
         // Need to make sure the authority is always non-empty
         if uri.has_empty_authority() {
             let msg = "Empty authority is not allowed".to_string();
             error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg));
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg));
         }
         // Make sure the resource ID is always 0
-        if uri.resource_id != 0 {
+        if uri.resource_id() != 0 {
             let msg = "Resource ID should always be 0".to_string();
             error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg));
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg));
         }
         // Return UPTransportZenoh
         Ok(UPTransportZenoh {
@@ -167,7 +177,31 @@ impl UPTransportZenoh {
             query_map: Arc::new(Mutex::new(HashMap::new())),
             rpc_callback_map: Arc::new(Mutex::new(HashMap::new())),
             uri,
+            #[cfg(feature = "zero-copy")]
+            shm_segment_size: DEFAULT_SHM_SEGMENT_SIZE,
+            #[cfg(feature = "zero-copy")]
+            shm_provider: OnceLock::new(),
+            #[cfg(feature = "zero-copy")]
+            zero_copy_subscriber_map: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
+    }
+
+    #[cfg(feature = "zero-copy")]
+    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
+        self.shm_provider
+            .get_or_init(|| {
+                ShmProviderBuilder::default_backend(self.shm_segment_size)
+                    .wait()
+                    .map(Arc::new)
+                    .map_err(|err| err.to_string())
+            })
+            .clone()
+            .map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::Internal,
+                    format!("failed to initialize Zenoh SHM provider: {err}"),
+                )
+            })
     }
 
     /// The function to enable tracing subscriber from the environment variables `RUST_LOG`.
@@ -187,28 +221,31 @@ impl UPTransportZenoh {
 
     fn uri_to_zenoh_key(&self, uri: &UUri) -> String {
         // authority_name
-        let authority = if uri.authority_name.is_empty() {
+        let authority = if uri.authority_name().is_empty() {
             self.get_authority()
         } else {
-            uri.authority_name.clone()
+            uri.authority_name().to_string()
         };
         // ue_id
-        let ue_id = if uri.has_wildcard_entity_id() {
+        let ue_id = if uri.has_wildcard_entity_type() || uri.has_wildcard_entity_instance() {
             "*".to_string()
         } else {
-            format!("{:X}", uri.ue_id)
+            format!(
+                "{:X}",
+                (u32::from(uri.uentity_instance_id()) << 16) | u32::from(uri.uentity_type_id())
+            )
         };
         // ue_version_major
         let ue_version_major = if uri.has_wildcard_version() {
             "*".to_string()
         } else {
-            format!("{:X}", uri.ue_version_major)
+            format!("{:X}", uri.uentity_major_version())
         };
         // resource_id
         let resource_id = if uri.has_wildcard_resource_id() {
             "*".to_string()
         } else {
-            format!("{:X}", uri.resource_id)
+            format!("{:X}", uri.resource_id())
         };
         format!("{authority}/{ue_id}/{ue_version_major}/{resource_id}")
     }
@@ -228,53 +265,41 @@ impl UPTransportZenoh {
     #[allow(clippy::match_same_arms)]
     fn map_zenoh_priority(upriority: UPriority) -> Priority {
         match upriority {
-            UPriority::UPRIORITY_CS0 => Priority::Background,
-            UPriority::UPRIORITY_CS1 => Priority::DataLow,
-            UPriority::UPRIORITY_CS2 => Priority::Data,
-            UPriority::UPRIORITY_CS3 => Priority::DataHigh,
-            UPriority::UPRIORITY_CS4 => Priority::InteractiveLow,
-            UPriority::UPRIORITY_CS5 => Priority::InteractiveHigh,
-            UPriority::UPRIORITY_CS6 => Priority::RealTime,
-            // If uProtocol prioritiy isn't specified, use CS1(DataLow) by default.
-            // https://github.com/eclipse-uprotocol/uprotocol-spec/blob/main/basics/qos.adoc
-            UPriority::UPRIORITY_UNSPECIFIED => Priority::DataLow,
+            UPriority::CS0 => Priority::Background,
+            UPriority::CS1 => Priority::DataLow,
+            UPriority::CS2 => Priority::Data,
+            UPriority::CS3 => Priority::DataHigh,
+            UPriority::CS4 => Priority::InteractiveLow,
+            UPriority::CS5 => Priority::InteractiveHigh,
+            UPriority::CS6 => Priority::RealTime,
         }
     }
 
-    fn uattributes_to_attachment(uattributes: &UAttributes) -> anyhow::Result<AttachmentBuilder> {
-        let mut attachment = AttachmentBuilder::new();
-        attachment.insert("", &UATTRIBUTE_VERSION.to_le_bytes());
-        attachment.insert("", &uattributes.write_to_bytes()?);
-        Ok(attachment)
+    fn uattributes_to_attachment(uattributes: &UAttributes) -> anyhow::Result<ZBytes> {
+        let mut attachment = Vec::new();
+        attachment.push(UATTRIBUTE_VERSION);
+        attachment.extend_from_slice(&uattributes.write_to_protobuf_bytes()?);
+        Ok(ZBytes::from(attachment))
     }
 
-    fn attachment_to_uattributes(attachment: &Attachment) -> anyhow::Result<UAttributes> {
-        let mut attachment_iter = attachment.iter();
-        if let Some((_, value)) = attachment_iter.next() {
-            let version = *value.as_slice().first().ok_or_else(|| {
-                let msg = format!("UAttributes version is empty (should be {UATTRIBUTE_VERSION})");
-                error!("{msg}");
-                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg)
-            })?;
-            if version != UATTRIBUTE_VERSION {
-                let msg =
-                    format!("UAttributes version is {version} (should be {UATTRIBUTE_VERSION})");
-                error!("{msg}");
-                return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg).into());
-            }
-        } else {
+    fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes> {
+        let attachment = attachment.to_bytes();
+        let Some((&version, bytes)) = attachment.as_ref().split_first() else {
             let msg = "Unable to get the UAttributes version".to_string();
             error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg).into());
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
+        };
+        if version != UATTRIBUTE_VERSION {
+            let msg = format!("UAttributes version is {version} (should be {UATTRIBUTE_VERSION})");
+            error!("{msg}");
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
         }
-        let uattributes = if let Some((_, value)) = attachment_iter.next() {
-            UAttributes::parse_from_bytes(value.as_slice())?
-        } else {
+        if bytes.is_empty() {
             let msg = "Unable to get the UAttributes".to_string();
             error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg).into());
-        };
-        Ok(uattributes)
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
+        }
+        UAttributes::parse_from_protobuf_bytes(bytes).map_err(Into::into)
     }
 
     // You can take a look at the table in up-spec for more detail
@@ -285,13 +310,13 @@ impl UPTransportZenoh {
         sink_uuri: Option<&UUri>,
     ) -> Result<MessageFlag, UStatus> {
         let mut flag = MessageFlag::none();
-        let rpc_range = 1..0x7FFF_u32;
-        let nonrpc_range = 0x8000..0xFFFE_u32;
+        let rpc_range = 1..0x7FFF_u16;
+        let nonrpc_range = 0x8000..0xFFFE_u16;
 
-        let src_resource = source_uuri.resource_id;
+        let src_resource = source_uuri.resource_id();
         // Notification / Request / Response
         if let Some(dst_uuri) = sink_uuri {
-            let dst_resource = dst_uuri.resource_id;
+            let dst_resource = dst_uuri.resource_id();
 
             if (nonrpc_range.contains(&src_resource) && dst_resource == 0)
                 || (src_resource == 0xFFFF && dst_resource == 0)
@@ -315,7 +340,7 @@ impl UPTransportZenoh {
         }
         if flag.is_none() {
             Err(UStatus::fail_with_code(
-                UCode::INTERNAL,
+                UCode::Internal,
                 "Wrong combination of source UUri and sink UUri",
             ))
         } else {
@@ -375,10 +400,10 @@ mod tests {
     #[test_case("//192.168.1.100/10AB/3/0", Some("//192.168.1.101/20EF/4/B"), Ok(MessageFlag::Request); "Request Message")]
     #[test_case("//192.168.1.101/20EF/4/B", Some("//192.168.1.100/10AB/3/0"), Ok(MessageFlag::Response); "Response Message")]
     #[test_case("//*/FFFF/FF/FFFF", Some("//192.168.1.100/10AB/3/0"), Ok(MessageFlag::Notification | MessageFlag::Response); "Listen to Notification and Response Message")]
-    #[test_case("//*/FFFF/FF/FFFF", Some("//192.168.1.101/20EF/4/B"), Err(UCode::INTERNAL); "Impossible scenario 1")]
-    #[test_case("//192.168.1.100/10AB/3/0", Some("//*/FFFF/FF/FFFF"), Err(UCode::INTERNAL); "Impossible scenario 2")]
-    #[test_case("//192.168.1.101/20EF/4/B", Some("//*/FFFF/FF/FFFF"), Err(UCode::INTERNAL); "Impossible scenario 3")]
-    #[test_case("//192.168.1.100/10AB/3/80CD", Some("//*/FFFF/FF/FFFF"), Err(UCode::INTERNAL); "Impossible scenario 4")]
+    #[test_case("//*/FFFF/FF/FFFF", Some("//192.168.1.101/20EF/4/B"), Err(UCode::Internal); "Impossible scenario 1")]
+    #[test_case("//192.168.1.100/10AB/3/0", Some("//*/FFFF/FF/FFFF"), Err(UCode::Internal); "Impossible scenario 2")]
+    #[test_case("//192.168.1.101/20EF/4/B", Some("//*/FFFF/FF/FFFF"), Err(UCode::Internal); "Impossible scenario 3")]
+    #[test_case("//192.168.1.100/10AB/3/80CD", Some("//*/FFFF/FF/FFFF"), Err(UCode::Internal); "Impossible scenario 4")]
     #[test_case("//*/FFFF/FF/FFFF", Some("//[::1]/FFFF/FF/FFFF"), Ok(MessageFlag::Notification | MessageFlag::Request | MessageFlag::Response); "All messages to a device")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_listener_message_type(

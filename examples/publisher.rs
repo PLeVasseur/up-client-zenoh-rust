@@ -33,7 +33,7 @@ async fn main() {
     loop {
         let data = format!("{cnt}");
         let umessage = UMessageBuilder::publish(uuri.clone())
-            .build_with_payload(data.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+            .build_with_payload(data.clone(), UPayloadFormat::Text)
             .unwrap();
         println!("Publishing {data} from {uuri}...");
         publisher.send(umessage).await.unwrap();

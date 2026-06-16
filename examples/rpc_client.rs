@@ -32,9 +32,9 @@ impl ResponseListener {
 #[async_trait]
 impl UListener for ResponseListener {
     async fn on_receive(&self, msg: UMessage) {
-        let payload = msg.payload.unwrap();
+        let payload = msg.payload().expect("payload").to_vec();
         let value = payload.into_iter().map(|c| c as char).collect::<String>();
-        let uri = msg.attributes.unwrap().source.unwrap().to_string();
+        let uri = msg.attributes().source().to_string();
         println!("Receiving response {value} from {uri}");
         self.notify.notify_one();
     }
@@ -65,7 +65,7 @@ async fn main() {
     // create uPayload and send request
     let data = String::from("GetCurrentTime");
     let umsg = UMessageBuilder::request(sink_uuri.clone(), src_uuri.clone(), 1000)
-        .build_with_payload(data, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+        .build_with_payload(data, UPayloadFormat::Text)
         .unwrap();
     println!("Sending request from {src_uuri} to {sink_uuri}");
     rpc_client.send(umsg).await.unwrap();

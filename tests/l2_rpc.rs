@@ -42,6 +42,7 @@ impl RequestHandler for ExampleHandler {
     async fn handle_request(
         &self,
         _resource_id: u16,
+        _attributes: &up_rust::UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
         let payload = request_payload.unwrap().payload();
@@ -49,10 +50,7 @@ impl RequestHandler for ExampleHandler {
         // compare the request data
         assert_eq!(data, self.request_data);
         // return
-        let payload = UPayload::new(
-            self.response_data.clone().into(),
-            UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-        );
+        let payload = UPayload::new(self.response_data.clone(), UPayloadFormat::Text);
         Ok(Some(payload))
     }
 }
@@ -91,7 +89,7 @@ async fn test_l2_rpc() {
     // Create L2 RPC client
     let rpc_client = Arc::new(ZenohRpcClient::new(uptransport_client.clone()));
 
-    let payload = UPayload::new(request_data.into(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT);
+    let payload = UPayload::new(request_data, UPayloadFormat::Text);
     let call_options = CallOptions::for_rpc_request(5_000, None, None, None);
     let result = rpc_client
         .invoke_method(

@@ -22,9 +22,9 @@ struct SubscriberListener;
 #[async_trait]
 impl UListener for SubscriberListener {
     async fn on_receive(&self, msg: UMessage) {
-        let payload = msg.payload.unwrap();
+        let payload = msg.payload().expect("payload").to_vec();
         let value = payload.into_iter().map(|c| c as char).collect::<String>();
-        let uri = msg.attributes.unwrap().source.unwrap().to_string();
+        let uri = msg.attributes().source().to_string();
         println!("Receiving {value} from {uri}");
     }
 }

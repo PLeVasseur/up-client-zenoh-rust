@@ -2,7 +2,7 @@ use std::{collections::VecDeque, io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use up_rust_userializer::{
+use up_rust::{
     PreparedTxLoanSpec, UCode, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata, UStatus,
     UTxBuffer, UUri, UVecTxBuffer, UWire, UWireTransport, UWithWire, UZeroCopyTransportCore,
 };

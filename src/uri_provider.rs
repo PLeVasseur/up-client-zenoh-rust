@@ -16,13 +16,11 @@ use up_rust::{LocalUriProvider, UUri};
 
 impl LocalUriProvider for UPTransportZenoh {
     fn get_authority(&self) -> String {
-        self.uri.authority_name.clone()
+        self.uri.authority_name().to_string()
     }
 
     fn get_resource_uri(&self, resource_id: u16) -> UUri {
-        let mut uri = self.get_source_uri();
-        uri.resource_id = u32::from(resource_id);
-        uri
+        self.get_source_uri().clone_with_resource_id(resource_id)
     }
 
     fn get_source_uri(&self) -> UUri {
@@ -51,8 +49,10 @@ mod tests {
             .unwrap();
         assert_eq!(up_transport_zenoh.get_authority(), authority);
         assert_eq!(
-            up_transport_zenoh.get_resource_uri(resource_id).resource_id,
-            u32::from(resource_id)
+            up_transport_zenoh
+                .get_resource_uri(resource_id)
+                .resource_id(),
+            resource_id
         );
         assert_eq!(up_transport_zenoh.get_source_uri(), source_uri);
     }

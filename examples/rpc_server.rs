@@ -36,20 +36,17 @@ impl RpcListener {
 #[async_trait]
 impl UListener for RpcListener {
     async fn on_receive(&self, msg: UMessage) {
-        let UMessage {
-            attributes,
-            payload,
-            ..
-        } = msg;
+        let attributes = msg.attributes().clone();
 
         // Build the payload to send back
-        let value = payload
-            .unwrap()
-            .into_iter()
-            .map(|c| c as char)
+        let value = msg
+            .payload()
+            .expect("payload")
+            .iter()
+            .map(|c| *c as char)
             .collect::<String>();
-        let source = attributes.clone().unwrap().source.unwrap();
-        let sink = attributes.clone().unwrap().sink.unwrap();
+        let source = attributes.source();
+        let sink = attributes.sink_unchecked();
         println!("Receiving {value} from {source} to {sink}");
 
         // Send back result
@@ -57,7 +54,7 @@ impl UListener for RpcListener {
             .build_with_payload(
                 // Get current time
                 format!("{}", Utc::now()),
-                UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
+                UPayloadFormat::Text,
             )
             .unwrap();
         task::block_in_place(|| {

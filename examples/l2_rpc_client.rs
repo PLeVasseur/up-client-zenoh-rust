@@ -36,12 +36,12 @@ async fn main() {
 
     // create uPayload and send request
     let data = String::from("GetCurrentTime");
-    let payload = UPayload::new(data.into(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT);
+    let payload = UPayload::new(data, UPayloadFormat::Text);
     let call_options = CallOptions::for_rpc_request(
         5_000,
         Some(UUID::build()),
         Some("my_token".to_string()),
-        Some(UPriority::UPRIORITY_CS6),
+        Some(UPriority::CS6),
     );
     println!(
         "Sending request from {} to {}",

@@ -2,7 +2,7 @@ use std::{sync::Arc, sync::Mutex as StdMutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use up_rust_userializer::{
+use up_rust::{
     EncodedOwnedFrame, PayloadEncoding, PayloadFormat, ProtobufWire, UCode, UFrameMetadata,
     UFrameView, UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat,
     UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUri, UWireMetadata, UWithWire, UZeroCopyListener,
@@ -330,14 +330,11 @@ impl CountingListener {
 }
 
 #[async_trait]
-impl<W> UZeroCopyListener<up_rust_userializer::UWireRx<ZenohEncodedRxFrame, W>> for CountingListener
+impl<W> UZeroCopyListener<up_rust::UWireRx<ZenohEncodedRxFrame, W>> for CountingListener
 where
     W: UWireMetadata + Send + Sync + 'static,
 {
-    async fn on_receive_zero_copy(
-        &self,
-        frame: up_rust_userializer::UWireRx<ZenohEncodedRxFrame, W>,
-    ) {
+    async fn on_receive_zero_copy(&self, frame: up_rust::UWireRx<ZenohEncodedRxFrame, W>) {
         self.payloads
             .lock()
             .expect("payload lock")

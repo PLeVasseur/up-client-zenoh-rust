@@ -57,23 +57,20 @@ impl UStreamerListener {
 #[async_trait]
 impl UListener for UStreamerListener {
     async fn on_receive(&self, msg: UMessage) {
-        let UMessage {
-            attributes,
-            payload,
-            ..
-        } = msg;
-        match attributes.clone().0.unwrap().type_.enum_value().unwrap() {
-            UMessageType::UMESSAGE_TYPE_NOTIFICATION => {
-                let data = payload.unwrap();
-                let value = data.into_iter().map(|c| c as char).collect::<String>();
+        let attributes = msg.attributes().clone();
+        match attributes.type_() {
+            UMessageType::Notification => {
+                let value = msg
+                    .payload()
+                    .expect("payload")
+                    .iter()
+                    .map(|c| *c as char)
+                    .collect::<String>();
                 *self.recv_notification_data.lock().unwrap() = value;
             }
-            UMessageType::UMESSAGE_TYPE_REQUEST => {
+            UMessageType::Request => {
                 let umessage = UMessageBuilder::response_for_request(&attributes)
-                    .build_with_payload(
-                        self.predefined_resp_data.clone(),
-                        UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-                    )
+                    .build_with_payload(self.predefined_resp_data.clone(), UPayloadFormat::Text)
                     .unwrap();
                 task::block_in_place(|| {
                     Handle::current()
@@ -81,12 +78,16 @@ impl UListener for UStreamerListener {
                         .unwrap();
                 });
             }
-            UMessageType::UMESSAGE_TYPE_RESPONSE => {
-                let data = payload.unwrap();
-                let value = data.into_iter().map(|c| c as char).collect::<String>();
+            UMessageType::Response => {
+                let value = msg
+                    .payload()
+                    .expect("payload")
+                    .iter()
+                    .map(|c| *c as char)
+                    .collect::<String>();
                 *self.recv_response_data.lock().unwrap() = value;
             }
-            _ => {
+            UMessageType::Publish => {
                 panic!("Wrong UMessageType!");
             }
         };
@@ -110,12 +111,12 @@ impl ResponseListener {
 #[async_trait]
 impl UListener for ResponseListener {
     async fn on_receive(&self, msg: UMessage) {
-        let UMessage { payload, .. } = msg;
         // Check the response data
-        let value = payload
-            .unwrap()
-            .into_iter()
-            .map(|c| c as char)
+        let value = msg
+            .payload()
+            .expect("payload")
+            .iter()
+            .map(|c| *c as char)
             .collect::<String>();
         *self.response_data.lock().unwrap() = value;
     }
@@ -137,13 +138,10 @@ impl RequestListener {
 #[async_trait]
 impl UListener for RequestListener {
     async fn on_receive(&self, msg: UMessage) {
-        let UMessage { attributes, .. } = msg;
+        let attributes = msg.attributes().clone();
         // Send back result
         let umessage = UMessageBuilder::response_for_request(&attributes)
-            .build_with_payload(
-                self.predefined_resp_data.clone(),
-                UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-            )
+            .build_with_payload(self.predefined_resp_data.clone(), UPayloadFormat::Text)
             .unwrap();
         task::block_in_place(|| {
             Handle::current()
@@ -186,7 +184,7 @@ async fn test_ustreamer() {
         let src_uuri = uclient.get_resource_uri(0x8000);
         let sink_uuri = ustreamer.get_source_uri();
         let umessage = UMessageBuilder::notification(src_uuri, sink_uuri)
-            .build_with_payload(target_data.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+            .build_with_payload(target_data.clone(), UPayloadFormat::Text)
             .unwrap();
         uclient.send(umessage).await.unwrap();
 
@@ -211,10 +209,7 @@ async fn test_ustreamer() {
 
         // Send Request
         let umessage = UMessageBuilder::request(sink_uuri.clone(), src_uuri.clone(), 1000)
-            .build_with_payload(
-                String::from("Not matter"),
-                UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-            )
+            .build_with_payload(String::from("Not matter"), UPayloadFormat::Text)
             .unwrap();
         uclient.send(umessage).await.unwrap();
 
@@ -252,10 +247,7 @@ async fn test_ustreamer() {
 
         // Send Request (uStreamer => uclient)
         let umessage = UMessageBuilder::request(sink_uuri.clone(), src_uuri.clone(), 1000)
-            .build_with_payload(
-                String::from("Not matter"),
-                UPayloadFormat::UPAYLOAD_FORMAT_TEXT,
-            )
+            .build_with_payload(String::from("Not matter"), UPayloadFormat::Text)
             .unwrap();
         ustreamer.send(umessage).await.unwrap();
 
