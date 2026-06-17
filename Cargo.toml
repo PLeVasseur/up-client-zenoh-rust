@@ -15,7 +15,9 @@
 description = "Zenoh Rust Transport library implementation of the Eclipse uProtocol"
 edition = "2021"
 include = [
+    "/benches/*",
     "/src/*",
+    "/scripts/*",
     "/examples/*",
     "/Cargo.toml",
     "/README.md",
@@ -38,7 +40,17 @@ pedantic = "deny"
 [features]
 default = []
 benchmark-owned = ["up-rust/owned-frame-transport"]
+payload-contract-benchmarks = ["up-rust/payload-contract-fixtures"]
+payload-contract-large-benchmarks = [
+    "payload-contract-benchmarks",
+    "up-rust/payload-contract-large-fixtures",
+]
 zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
+
+[[bench]]
+name = "transport_criterion"
+harness = false
+required-features = ["zero-copy", "payload-contract-benchmarks"]
 
 [dependencies]
 anyhow = "1.0.75"
@@ -55,13 +67,15 @@ rand = "0.8.5"
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "26d70ef45af61fdd17d3e130845a5be155154b2e" }
+up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "815fbeb170f85e3bb33e98c63cfc4a2667dfb1f9" }
 zenoh = { version = "1.9.0", features = ["internal", "unstable"] }
 
 [dev-dependencies]
+criterion = { version = "0.5.1", features = ["csv_output"] }
+serde_json = "1.0.145"
 serial_test = "3.2"
 test-case = { version = "3.3" }
-up-wire-xcdrv2 = { git = "ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "4092ba75e24f4f96b7088f37016c78ac75aa5c05" }
+up-wire-xcdrv2 = { git = "ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "d35b43df4951a8eca09313a20bf24a3d79400f72" }
 
 [[test]]
 name = "zero_copy_transport"
