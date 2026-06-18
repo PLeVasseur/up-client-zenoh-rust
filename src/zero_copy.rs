@@ -34,7 +34,16 @@ use zenoh::{
     Wait,
 };
 
-use crate::UPTransportZenoh;
+use crate::mechanics::ZenohWireMechanics;
+
+type ZeroCopySubscriberMap = Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            (String, ComparableZeroCopyListener),
+            zenoh::pubsub::Subscriber<()>,
+        >,
+    >,
+>;
 
 /// Real Zenoh SHM zero-copy selected-wire transport core.
 ///
@@ -44,7 +53,8 @@ use crate::UPTransportZenoh;
 /// wire metadata as Zenoh attachment bytes and admitting received payload bytes
 /// only when Zenoh reports SHM backing.
 pub struct ZenohZeroCopyCore {
-    inner: UPTransportZenoh,
+    mechanics: ZenohWireMechanics,
+    subscriber_map: ZeroCopySubscriberMap,
 }
 
 /// Builder for [`ZenohZeroCopyCore`].
@@ -63,6 +73,11 @@ impl ZenohZeroCopyCore {
     ///
     /// This is a convenience wrapper around [`Self::builder`]. Use the builder
     /// when tests or deployments need to tune the SHM segment size.
+    ///
+    /// # Errors
+    ///
+    /// Returns a status when the Zenoh session, URI validation, or SHM
+    /// configuration fails.
     pub async fn new(
         config: crate::zenoh_config::Config,
         uri: impl Into<String>,
@@ -121,11 +136,14 @@ impl ZenohZeroCopyCoreBuilder {
     /// Returns a status when the Zenoh session, URI validation, or SHM
     /// configuration fails.
     pub async fn build(self) -> Result<ZenohZeroCopyCore, UStatus> {
-        let mut inner = UPTransportZenoh::new(self.config, self.uri).await?;
+        let mut mechanics = ZenohWireMechanics::new(self.config, self.uri).await?;
         if let Some(shm_segment_size) = self.shm_segment_size {
-            inner.set_shm_segment_size(shm_segment_size)?;
+            mechanics.set_shm_segment_size(shm_segment_size)?;
         }
-        Ok(ZenohZeroCopyCore { inner })
+        Ok(ZenohZeroCopyCore {
+            mechanics,
+            subscriber_map: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        })
     }
 }
 
@@ -312,7 +330,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
 
     async fn loan_prepared_tx(&self, spec: PreparedTxLoanSpec) -> Result<Self::Tx, UStatus> {
         let metadata = spec.metadata().clone();
-        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(&self.inner, &spec)?;
+        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(&self.mechanics, &spec)?;
         Ok(ZenohTxBuffer {
             metadata,
             zenoh_key,
@@ -324,19 +342,19 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
 
     async fn send_prepared_zero_copy(&self, buffer: Self::Tx) -> Result<(), UStatus> {
         let payload = buffer.payload.into_zbytes();
-        self.inner
-            .session
+        self.mechanics
+            .session()
             .put(&buffer.zenoh_key, payload)
             .priority(buffer.priority)
             .attachment(buffer.attachment)
             .await
-            .inspect(|()| trace!("putting zero-copy frame with key: {}", buffer.zenoh_key))
             .map_err(|err| {
                 UStatus::fail_with_code(
                     UCode::Internal,
                     format!("failed to put Zenoh frame: {err}"),
                 )
             })?;
+        trace!("putting zero-copy frame with key: {}", buffer.zenoh_key);
         Ok(())
     }
 
@@ -345,10 +363,12 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
     ) -> Result<Self::Rx, UStatus> {
-        let zenoh_key = self.inner.to_zenoh_key_string(source_filter, sink_filter);
+        let zenoh_key = self
+            .mechanics
+            .to_zenoh_key_string(source_filter, sink_filter);
         let subscriber = self
-            .inner
-            .session
+            .mechanics
+            .session()
             .declare_subscriber(&zenoh_key)
             .await
             .map_err(|err| {
@@ -383,17 +403,19 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UEncodedZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
-        let zenoh_key = self.inner.to_zenoh_key_string(source_filter, sink_filter);
+        let zenoh_key = self
+            .mechanics
+            .to_zenoh_key_string(source_filter, sink_filter);
         let comparable_listener = ComparableZeroCopyListener::new(listener);
-        let mut listeners = self.inner.zero_copy_subscriber_map.lock().await;
+        let mut listeners = self.subscriber_map.lock().await;
         if listeners.contains_key(&(zenoh_key.clone(), comparable_listener.clone())) {
             return Ok(());
         }
 
         let callback_listener = comparable_listener.clone();
         let subscriber = self
-            .inner
-            .session
+            .mechanics
+            .session()
             .declare_subscriber(&zenoh_key)
             .callback_mut(move |sample: Sample| {
                 let Some(attachment) = sample.attachment() else {
@@ -430,10 +452,11 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UEncodedZeroCopyListener<Self::Rx>>,
     ) -> Result<(), UStatus> {
-        let zenoh_key = self.inner.to_zenoh_key_string(source_filter, sink_filter);
+        let zenoh_key = self
+            .mechanics
+            .to_zenoh_key_string(source_filter, sink_filter);
         let subscriber = self
-            .inner
-            .zero_copy_subscriber_map
+            .subscriber_map
             .lock()
             .await
             .remove(&(zenoh_key, ComparableZeroCopyListener::new(listener)))
@@ -459,7 +482,7 @@ impl UZeroCopyUninitTransportCore for ZenohZeroCopyCore {
         spec: PreparedTxLoanSpec,
     ) -> Result<Self::UninitTx, UStatus> {
         let metadata = spec.metadata().clone();
-        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(&self.inner, &spec)?;
+        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(&self.mechanics, &spec)?;
         Ok(ZenohUninitTxBuffer {
             metadata,
             zenoh_key,
@@ -471,7 +494,7 @@ impl UZeroCopyUninitTransportCore for ZenohZeroCopyCore {
 }
 
 fn reserve_tx_parts(
-    transport: &UPTransportZenoh,
+    transport: &ZenohWireMechanics,
     spec: &PreparedTxLoanSpec,
 ) -> Result<(String, ZBytes, zenoh::qos::Priority, ZenohTxPayload), UStatus> {
     validate_alignment(spec.payload_alignment())?;
@@ -485,7 +508,7 @@ fn reserve_tx_parts(
     let zenoh_key =
         transport.to_zenoh_key_string(metadata.attributes().source(), metadata.attributes().sink());
     let attachment = ZBytes::from(spec.encoded_metadata().to_vec());
-    let priority = UPTransportZenoh::map_zenoh_priority(
+    let priority = crate::mechanics::map_zenoh_priority(
         metadata
             .attributes()
             .priority()
@@ -496,7 +519,7 @@ fn reserve_tx_parts(
 }
 
 fn reserve_payload(
-    transport: &UPTransportZenoh,
+    transport: &ZenohWireMechanics,
     payload_len: usize,
     alignment: usize,
 ) -> Result<ZenohTxPayload, UStatus> {

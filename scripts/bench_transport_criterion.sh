@@ -46,7 +46,7 @@ USAGE
 cargo_features() {
     case "$TRANSPORT_BENCH_SUITE" in
         payload-contract)
-            printf '%s\n' "zero-copy,payload-contract-large-benchmarks"
+            printf '%s\n' "zero-copy,benchmark-owned,payload-contract-large-benchmarks"
             ;;
         *)
             printf 'TRANSPORT_BENCH_SUITE must be payload-contract\n' >&2
@@ -109,7 +109,7 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 ## Environment
 
 - Transport: Zenoh
-- Phase: USR-10B1
+- Phase: USR-10B1X
 - Git head: \`$(git_value rev-parse HEAD)\`
 - Git branch: \`$(git_value branch --show-current)\`
 - Default Rust: \`$(rustc --version)\`
@@ -132,7 +132,7 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 
 ## Claim Boundary
 
-This script is the USR-10B1 authority wrapper for the C1 representative command shape. It writes artifacts only under the caller-selected report directory. The generated guardrail is a blocker marker, not aggregate USR-10 guard authority.
+This script is the USR-10B1X authority wrapper for the Zenoh selected-wire and owned-core benchmark command shape. It writes artifacts only under the caller-selected report directory. The generated guardrail is a blocker marker, not aggregate USR-10 guard authority.
 SUMMARY
 }
 
@@ -151,7 +151,7 @@ export_results() {
     fi
 
     cat >"$report_dir/guardrail.json" <<JSON
-{"status":"blocked","phase":"USR-10B1","reason":"real aggregate Zenoh guard comparison is not implemented in this branch"}
+    {"status":"blocked","phase":"USR-10B1X","reason":"real aggregate Zenoh guard comparison is not implemented in this branch"}
 JSON
 
     write_summary "$report_dir" "$raw_output"
@@ -183,7 +183,7 @@ case "$subcommand" in
         fi
         mkdir -p "$(dirname "$2")"
         cat >"$2" <<JSON
-{"status":"blocked","phase":"USR-10B1","candidate":"$1","reason":"real aggregate Zenoh guard comparison is not implemented in this branch"}
+{"status":"blocked","phase":"USR-10B1X","candidate":"$1","reason":"real aggregate Zenoh guard comparison is not implemented in this branch"}
 JSON
         ;;
     export)

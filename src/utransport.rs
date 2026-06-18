@@ -54,7 +54,7 @@ fn invoke_block_callback(listener: &Arc<dyn UListener>, resp_msg: UMessage) {
                 .unwrap()
                 .block_on(listener.on_receive(resp_msg));
         }
-    };
+    }
 }
 
 #[inline]
@@ -66,11 +66,11 @@ fn spawn_nonblock_callback(listener: &Arc<dyn UListener>, listener_msg: UMessage
 }
 
 fn message_from_parts(
-    attributes: UAttributes,
+    attributes: &UAttributes,
     payload: Option<Bytes>,
 ) -> Result<UMessage, UStatus> {
     let proto = UMessageProto {
-        attributes: Some(UAttributesProto::from(&attributes)).into(),
+        attributes: Some(UAttributesProto::from(attributes)).into(),
         payload,
         ..Default::default()
     };
@@ -161,7 +161,7 @@ impl UPTransportZenoh {
                         }
                     };
                     let Ok(message) = message_from_parts(
-                        u_attribute,
+                        &u_attribute,
                         Some(Bytes::copy_from_slice(sample.payload().to_bytes().as_ref())),
                     ) else {
                         warn!("Unable to create UMessage from Zenoh reply");
@@ -258,7 +258,7 @@ impl UPTransportZenoh {
             };
             // Create UMessage
             let Ok(msg) = message_from_parts(
-                u_attribute,
+                &u_attribute,
                 Some(Bytes::copy_from_slice(sample.payload().to_bytes().as_ref())),
             ) else {
                 warn!("Unable to create UMessage from Zenoh sample");
@@ -310,7 +310,7 @@ impl UPTransportZenoh {
             };
             // Create UMessage and store the query into HashMap (Will be used in send_response)
             let Ok(msg) = message_from_parts(
-                u_attribute.clone(),
+                &u_attribute,
                 query
                     .payload()
                     .map(|payload| Bytes::copy_from_slice(payload.to_bytes().as_ref())),

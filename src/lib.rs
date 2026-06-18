@@ -10,6 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
+mod mechanics;
 pub mod rpc;
 pub mod uri_provider;
 pub mod utransport;
@@ -20,25 +21,21 @@ mod zero_copy;
 
 pub use rpc::ZenohRpcClient;
 #[cfg(feature = "benchmark-owned")]
-pub use wire_full::{ZenohEncodedOwnedFrameLog, ZenohOwnedCore};
+pub use wire_full::ZenohOwnedCore;
 #[cfg(feature = "zero-copy")]
 pub use zero_copy::{
     ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer, ZenohZeroCopyCore, ZenohZeroCopyCoreBuilder,
 };
 
 use bitmask_enum::bitmask;
-#[cfg(feature = "zero-copy")]
-use std::sync::OnceLock;
 use std::{
     collections::HashMap,
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 use tokio::runtime::Runtime;
 use tracing::error;
 use up_rust::{
-    ComparableListener, LocalUriProvider, ProtobufMappable, UAttributes, UCode, UListener,
-    UPriority, UStatus, UUri,
+    ComparableListener, ProtobufMappable, UAttributes, UCode, UListener, UPriority, UStatus, UUri,
 };
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
@@ -49,11 +46,6 @@ use zenoh::{
     qos::Priority,
     query::{Query, Queryable},
     Session,
-};
-#[cfg(feature = "zero-copy")]
-use zenoh::{
-    shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
-    Wait,
 };
 
 const UATTRIBUTE_VERSION: u8 = 1;
@@ -80,14 +72,6 @@ type SubscriberMap = Arc<Mutex<HashMap<(String, ComparableListener), Subscriber<
 type QueryableMap = Arc<Mutex<HashMap<(String, ComparableListener), Queryable<()>>>>;
 type QueryMap = Arc<Mutex<HashMap<String, Query>>>;
 type RpcCallbackMap = Arc<Mutex<HashMap<OwnedKeyExpr, Arc<dyn UListener>>>>;
-#[cfg(feature = "zero-copy")]
-type ZeroCopySubscriberMap = Arc<
-    tokio::sync::Mutex<HashMap<(String, zero_copy::ComparableZeroCopyListener), Subscriber<()>>>,
->;
-#[cfg(feature = "zero-copy")]
-type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
-#[cfg(feature = "zero-copy")]
-type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 pub struct UPTransportZenoh {
     session: Arc<Session>,
     // Able to unregister Subscriber
@@ -100,16 +84,7 @@ pub struct UPTransportZenoh {
     rpc_callback_map: RpcCallbackMap,
     // URI
     uri: UUri,
-    #[cfg(feature = "zero-copy")]
-    shm_segment_size: usize,
-    #[cfg(feature = "zero-copy")]
-    shm_provider: OnceLock<ZenohShmProviderInit>,
-    #[cfg(feature = "zero-copy")]
-    zero_copy_subscriber_map: ZeroCopySubscriberMap,
 }
-
-#[cfg(feature = "zero-copy")]
-const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
 impl UPTransportZenoh {
     /// Create `UPTransportZenoh` by applying the Zenoh configuration, local `UUri`.
@@ -129,7 +104,7 @@ impl UPTransportZenoh {
     /// # async fn main() {
     /// use up_transport_zenoh::{zenoh_config, UPTransportZenoh};
     /// let uptransport =
-    ///     UPTransportZenoh::new(zenoh_config::Config::default(), "//MyAuthName/ABCD/1/0")
+    ///     UPTransportZenoh::new(zenoh_config::Config::default(), "//vehicle1/ABCD/1/0")
     ///         .await
     ///         .unwrap();
     /// # }
@@ -138,7 +113,6 @@ impl UPTransportZenoh {
         config: zenoh_config::Config,
         uri: impl Into<String>,
     ) -> Result<UPTransportZenoh, UStatus> {
-        // Create Zenoh session
         let Ok(session) = zenoh::open(config).await else {
             let msg = "Unable to open Zenoh session".to_string();
             error!("{msg}");
@@ -151,25 +125,7 @@ impl UPTransportZenoh {
         session: Session,
         uri: impl Into<String>,
     ) -> Result<UPTransportZenoh, UStatus> {
-        // From String to UUri
-        let uri = UUri::from_str(&uri.into()).map_err(|_| {
-            let msg = "Unable to transform the uri to UUri".to_string();
-            error!("{msg}");
-            UStatus::fail_with_code(UCode::InvalidArgument, msg)
-        })?;
-        // Need to make sure the authority is always non-empty
-        if uri.has_empty_authority() {
-            let msg = "Empty authority is not allowed".to_string();
-            error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg));
-        }
-        // Make sure the resource ID is always 0
-        if uri.resource_id() != 0 {
-            let msg = "Resource ID should always be 0".to_string();
-            error!("{msg}");
-            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg));
-        }
-        // Return UPTransportZenoh
+        let uri = mechanics::parse_local_uri(uri)?;
         Ok(UPTransportZenoh {
             session: Arc::new(session),
             subscriber_map: Arc::new(Mutex::new(HashMap::new())),
@@ -177,43 +133,7 @@ impl UPTransportZenoh {
             query_map: Arc::new(Mutex::new(HashMap::new())),
             rpc_callback_map: Arc::new(Mutex::new(HashMap::new())),
             uri,
-            #[cfg(feature = "zero-copy")]
-            shm_segment_size: DEFAULT_SHM_SEGMENT_SIZE,
-            #[cfg(feature = "zero-copy")]
-            shm_provider: OnceLock::new(),
-            #[cfg(feature = "zero-copy")]
-            zero_copy_subscriber_map: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
-    }
-
-    #[cfg(feature = "zero-copy")]
-    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
-        self.shm_provider
-            .get_or_init(|| {
-                ShmProviderBuilder::default_backend(self.shm_segment_size)
-                    .wait()
-                    .map(Arc::new)
-                    .map_err(|err| err.to_string())
-            })
-            .clone()
-            .map_err(|err| {
-                UStatus::fail_with_code(
-                    UCode::Internal,
-                    format!("failed to initialize Zenoh SHM provider: {err}"),
-                )
-            })
-    }
-
-    #[cfg(feature = "zero-copy")]
-    pub(crate) fn set_shm_segment_size(&mut self, shm_segment_size: usize) -> Result<(), UStatus> {
-        if shm_segment_size == 0 {
-            return Err(UStatus::fail_with_code(
-                UCode::InvalidArgument,
-                "Zenoh SHM segment size must be non-zero",
-            ));
-        }
-        self.shm_segment_size = shm_segment_size;
-        Ok(())
     }
 
     /// The function to enable tracing subscriber from the environment variables `RUST_LOG`.
@@ -231,60 +151,15 @@ impl UPTransportZenoh {
         }
     }
 
-    fn uri_to_zenoh_key(&self, uri: &UUri) -> String {
-        // authority_name
-        let authority = if uri.authority_name().is_empty() {
-            self.get_authority()
-        } else {
-            uri.authority_name().to_string()
-        };
-        // ue_id
-        let ue_id = if uri.has_wildcard_entity_type() || uri.has_wildcard_entity_instance() {
-            "*".to_string()
-        } else {
-            format!(
-                "{:X}",
-                (u32::from(uri.uentity_instance_id()) << 16) | u32::from(uri.uentity_type_id())
-            )
-        };
-        // ue_version_major
-        let ue_version_major = if uri.has_wildcard_version() {
-            "*".to_string()
-        } else {
-            format!("{:X}", uri.uentity_major_version())
-        };
-        // resource_id
-        let resource_id = if uri.has_wildcard_resource_id() {
-            "*".to_string()
-        } else {
-            format!("{:X}", uri.resource_id())
-        };
-        format!("{authority}/{ue_id}/{ue_version_major}/{resource_id}")
-    }
-
     // The format of Zenoh key should be
     // up/[src.authority]/[src.ue_id]/[src.ue_version_major]/[src.resource_id]/[sink.authority]/[sink.ue_id]/[sink.ue_version_major]/[sink.resource_id]
     fn to_zenoh_key_string(&self, src_uri: &UUri, dst_uri: Option<&UUri>) -> String {
-        let src = self.uri_to_zenoh_key(src_uri);
-        let dst = if let Some(dst) = dst_uri {
-            self.uri_to_zenoh_key(dst)
-        } else {
-            "{}/{}/{}/{}".to_string()
-        };
-        format!("up/{src}/{dst}")
+        mechanics::to_zenoh_key_string(&self.uri, src_uri, dst_uri)
     }
 
     #[allow(clippy::match_same_arms)]
     fn map_zenoh_priority(upriority: UPriority) -> Priority {
-        match upriority {
-            UPriority::CS0 => Priority::Background,
-            UPriority::CS1 => Priority::DataLow,
-            UPriority::CS2 => Priority::Data,
-            UPriority::CS3 => Priority::DataHigh,
-            UPriority::CS4 => Priority::InteractiveLow,
-            UPriority::CS5 => Priority::InteractiveHigh,
-            UPriority::CS6 => Priority::RealTime,
-        }
+        mechanics::map_zenoh_priority(upriority)
     }
 
     fn uattributes_to_attachment(uattributes: &UAttributes) -> anyhow::Result<ZBytes> {

@@ -29,6 +29,7 @@ impl ZenohRpcClient {
     /// # Arguments
     ///
     /// * `transport` - The Zenoh uProtocol Transport Layer.
+    #[must_use]
     pub fn new(transport: Arc<UPTransportZenoh>) -> Self {
         ZenohRpcClient { transport }
     }
@@ -64,7 +65,7 @@ impl RpcClient for ZenohRpcClient {
         }
         .map_err(|err| ServiceInvocationError::Internal(err.to_string()))?;
         let attributes = message.attributes().clone();
-        let payload_data = message.payload().map(|payload| payload.to_vec());
+        let payload_data = message.payload().map(<[u8]>::to_vec);
 
         // Get Zenoh key
         let zenoh_key = self

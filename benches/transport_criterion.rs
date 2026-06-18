@@ -36,11 +36,14 @@ use up_rust::{
     PayloadEncoding, ULoanedContiguousZeroCopyRxFrame,
 };
 use up_rust::{
-    StableContainerWireFormat, UCode, UFrameMetadata, UListener, UMessage, UMessageBuilder,
-    UMessageType, UPayloadFormat, UStatus, UTransport, UUri, UWireRx, UZeroCopyListener,
-    UZeroCopyTransport, UZeroCopyUninitTransportExt, UUID,
+    try_project_umessage_to_frame_metadata, StableContainerWireFormat, UCode, UFrameMetadata,
+    UMessage, UMessageBuilder, UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport,
+    UPayloadFormat, UStatus, UUri, UWireRx, UZeroCopyListener, UZeroCopyTransport,
+    UZeroCopyUninitTransportExt, UUID,
 };
-use up_transport_zenoh::{zenoh_config, UPTransportZenoh, ZenohRxFrame, ZenohZeroCopyCore};
+use up_transport_zenoh::{
+    zenoh_config, UPTransportZenoh, ZenohOwnedCore, ZenohRxFrame, ZenohZeroCopyCore,
+};
 
 const BENCH_TIMEOUT: Duration = Duration::from_secs(5);
 const LARGE_SENSOR_BENCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -161,11 +164,11 @@ struct OwnedAckListener {
 
 #[cfg(feature = "payload-contract-benchmarks")]
 #[async_trait]
-impl UListener for OwnedAckListener {
-    async fn on_receive(&self, message: UMessage) {
+impl UOwnedListener for OwnedAckListener {
+    async fn on_receive_owned(&self, frame: UOwnedFrame) {
         self.tx
             .send(owned_ack(
-                &message,
+                &frame,
                 &self.contract,
                 self.path,
                 self.encoding.as_ref(),
@@ -192,15 +195,16 @@ impl UZeroCopyListener<UWireRx<ZenohRxFrame, StableContainerWireFormat>>
     }
 }
 
-async fn build_owned_transport(authority: &str) -> Arc<UPTransportZenoh> {
-    Arc::new(
-        UPTransportZenoh::new(
-            zenoh_config::Config::default(),
-            format!("//{authority}/4210/1/0"),
-        )
-        .await
-        .expect("Zenoh owned benchmark transport should build"),
+async fn build_owned_transport(
+    authority: &str,
+) -> Arc<up_rust::UWireTransport<ZenohOwnedCore, StableContainerWireFormat>> {
+    let core = ZenohOwnedCore::new(
+        zenoh_config::Config::default(),
+        format!("//{authority}/4210/1/0"),
     )
+    .await
+    .expect("Zenoh owned benchmark core should build");
+    Arc::new(core.with_selected_wire(StableContainerWireFormat))
 }
 
 async fn build_selected_wire_transport(
@@ -217,7 +221,7 @@ async fn build_selected_wire_transport(
 }
 
 async fn register_owned_listener(
-    transport: &Arc<UPTransportZenoh>,
+    transport: &Arc<up_rust::UWireTransport<ZenohOwnedCore, StableContainerWireFormat>>,
     path: PayloadContractPath,
     case: &BenchCase,
     contract: &PayloadContractCase,
@@ -235,7 +239,7 @@ async fn register_owned_listener(
         }
     };
     transport
-        .register_listener(
+        .register_owned_listener(
             &case.source,
             None,
             Arc::new(OwnedAckListener {
@@ -269,7 +273,7 @@ async fn register_selected_wire_listener(
 }
 
 async fn send_owned(
-    transport: &Arc<UPTransportZenoh>,
+    transport: &Arc<up_rust::UWireTransport<ZenohOwnedCore, StableContainerWireFormat>>,
     path: PayloadContractPath,
     case: &BenchCase,
     id: UUID,
@@ -291,7 +295,17 @@ async fn send_owned(
             unreachable!("selected-wire path uses zero-copy send")
         }
     };
-    transport.send(case.message(id, payload, format)?).await
+    let message = case.message(id, payload, format)?;
+    let metadata = try_project_umessage_to_frame_metadata(&message)
+        .map_err(|error| invalid_argument(error.to_string()))?;
+    let frame = if let Some(payload) = message.payload() {
+        UOwnedFrame::with_payload(metadata, Bytes::copy_from_slice(payload))
+            .map_err(|error| invalid_argument(error.to_string()))?
+    } else {
+        UOwnedFrame::without_payload(metadata)
+            .map_err(|error| invalid_argument(error.to_string()))?
+    };
+    transport.send_owned(frame).await
 }
 
 async fn send_selected_wire(
@@ -403,20 +417,18 @@ async fn wait_for_ack(
 }
 
 fn owned_ack(
-    message: &UMessage,
+    frame: &UOwnedFrame,
     contract: &PayloadContractCase,
     path: PayloadContractPath,
     encoding: Option<&PayloadEncoding>,
 ) -> PayloadContractAck {
-    let payload = message.payload().expect("owned benchmark frame payload");
+    let payload = frame.payload().expect("owned benchmark frame payload");
     match path {
         PayloadContractPath::ProtobufOwned => {
-            assert_eq!(message.payload_format(), Some(UPayloadFormat::Protobuf));
             payload_contract::validate_protobuf_bytes(contract, PAYLOAD_CONTRACT_SEQUENCE, payload)
                 .expect("protobuf payload-contract frame should validate");
         }
         PayloadContractPath::StableOwnedBytes => {
-            assert_eq!(message.payload_format(), Some(UPayloadFormat::Raw));
             payload_contract::validate_stable_owned_bytes(
                 contract,
                 PAYLOAD_CONTRACT_SEQUENCE,
@@ -430,8 +442,8 @@ fn owned_ack(
         }
     }
     PayloadContractAck {
-        id: message.id().clone(),
-        message_type: message.type_(),
+        id: frame.metadata().attributes().id().clone(),
+        message_type: frame.metadata().attributes().type_(),
         case_id: contract.case_id(),
         sequence: PAYLOAD_CONTRACT_SEQUENCE,
         semantic_reference_len: contract.semantic_reference_len(),
