@@ -2171,7 +2171,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2210,7 +2210,7 @@ dependencies = [
  "cfg_aliases 0.2.1",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -2490,7 +2490,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3595,7 +3595,7 @@ dependencies = [
 [[package]]
 name = "up-rust"
 version = "0.10.0-SNAPSHOT"
-source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=75d8c108d2884957a9863579f408b9437c2b5392#75d8c108d2884957a9863579f408b9437c2b5392"
+source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=d40e4b01947e3f61d29c3edc8136ba3084e344be#d40e4b01947e3f61d29c3edc8136ba3084e344be"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3619,7 +3619,7 @@ dependencies = [
 [[package]]
 name = "up-rust-macros"
 version = "0.10.0-SNAPSHOT"
-source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=75d8c108d2884957a9863579f408b9437c2b5392#75d8c108d2884957a9863579f408b9437c2b5392"
+source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=d40e4b01947e3f61d29c3edc8136ba3084e344be#d40e4b01947e3f61d29c3edc8136ba3084e344be"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3656,7 +3656,7 @@ dependencies = [
 [[package]]
 name = "up-wire-xcdrv2"
 version = "0.0.0"
-source = "git+ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=17a4f9f969ba601566fffa89849c2f9c7c01f3a3#17a4f9f969ba601566fffa89849c2f9c7c01f3a3"
+source = "git+ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=cc2f5ac56fefe11653f77d4b1da44e4ec83301b2#cc2f5ac56fefe11653f77d4b1da44e4ec83301b2"
 dependencies = [
  "up-rust",
 ]
@@ -4010,15 +4010,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
