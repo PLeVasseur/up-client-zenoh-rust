@@ -20,6 +20,7 @@ readonly BASELINE_NAME="payload_contract_representative_v1"
 
 TRANSPORT_BENCH_SUITE="${TRANSPORT_BENCH_SUITE:-payload-contract}"
 TRANSPORT_BENCH_PROFILE="${TRANSPORT_BENCH_PROFILE:-all}"
+TRANSPORT_BENCH_DIAGNOSTIC="${TRANSPORT_BENCH_DIAGNOSTIC:-full-loop}"
 TRANSPORT_BENCH_REPORT_DIR="${TRANSPORT_BENCH_REPORT_DIR:-$DEFAULT_REPORT_DIR}"
 CRITERION_ARGS="${CRITERION_ARGS:-$DEFAULT_CRITERION_ARGS}"
 BENCH_PIN_PREFIX="${BENCH_PIN_PREFIX:-}"
@@ -37,6 +38,11 @@ Environment:
   TRANSPORT_BENCH_REPORT_DIR  Report output directory. Default: target/transport-perf/zenoh
   TRANSPORT_BENCH_SUITE       payload-contract. Default: payload-contract
   TRANSPORT_BENCH_PROFILE     core, camera, or all. Default: all
+  TRANSPORT_BENCH_DIAGNOSTIC  full-loop, prebuilt-payload, metadata-only, tx-only,
+                              rx-only, listener-only, copy-ledger, zc-init-only,
+                              zc-send-only, zc-rx-only, zc-validation-only,
+                              zc-filter-only, zc-copy-ledger, or
+                              zc-loan-provenance-check. Default: full-loop
   CRITERION_ARGS              Criterion args. Default matches USR-10B1 C1.
   BENCH_PIN_PREFIX            Optional command prefix for CPU pinning, etc.
   CARGO_BIN                   Cargo command. Default: cargo
@@ -55,6 +61,16 @@ cargo_features() {
     esac
 }
 
+validate_diagnostic() {
+    case "$TRANSPORT_BENCH_DIAGNOSTIC" in
+        full-loop | full | prebuilt-payload | metadata-only | tx-only | rx-only | listener-only | copy-ledger | zc-init-only | zc-send-only | zc-rx-only | zc-validation-only | zc-filter-only | zc-copy-ledger | zc-loan-provenance-check) ;;
+        *)
+            printf 'unsupported TRANSPORT_BENCH_DIAGNOSTIC: %s\n' "$TRANSPORT_BENCH_DIAGNOSTIC" >&2
+            exit 2
+            ;;
+    esac
+}
+
 validate_profile() {
     case "$TRANSPORT_BENCH_PROFILE" in
         core | camera | all) ;;
@@ -67,6 +83,7 @@ validate_profile() {
 
 run_cargo_bench() {
     validate_profile
+    validate_diagnostic
 
     local features
     features="$(cargo_features)"
@@ -77,10 +94,12 @@ run_cargo_bench() {
         read -r -a pin_parts <<<"$BENCH_PIN_PREFIX"
         TRANSPORT_BENCH_SUITE="$TRANSPORT_BENCH_SUITE" \
             TRANSPORT_BENCH_PROFILE="$TRANSPORT_BENCH_PROFILE" \
+            TRANSPORT_BENCH_DIAGNOSTIC="$TRANSPORT_BENCH_DIAGNOSTIC" \
             "${pin_parts[@]}" "${cargo_parts[@]}" bench --features "$features" --bench transport_criterion -- "${criterion_parts[@]}" "$@"
     else
         TRANSPORT_BENCH_SUITE="$TRANSPORT_BENCH_SUITE" \
             TRANSPORT_BENCH_PROFILE="$TRANSPORT_BENCH_PROFILE" \
+            TRANSPORT_BENCH_DIAGNOSTIC="$TRANSPORT_BENCH_DIAGNOSTIC" \
             "${cargo_parts[@]}" bench --features "$features" --bench transport_criterion -- "${criterion_parts[@]}" "$@"
     fi
 }
@@ -103,7 +122,7 @@ write_summary() {
 ## Command
 
 \`\`\`bash
-TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_BENCH_PROFILE CARGO_BIN="$CARGO_BIN" scripts/bench_transport_criterion.sh export
+TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_BENCH_PROFILE TRANSPORT_BENCH_DIAGNOSTIC=$TRANSPORT_BENCH_DIAGNOSTIC CARGO_BIN="$CARGO_BIN" scripts/bench_transport_criterion.sh export
 \`\`\`
 
 ## Environment
@@ -119,6 +138,7 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 - OS: \`$(uname -srmo)\`
 - Suite: \`$TRANSPORT_BENCH_SUITE\`
 - Profile: \`$TRANSPORT_BENCH_PROFILE\`
+- Diagnostic selector: \`$TRANSPORT_BENCH_DIAGNOSTIC\`
 - Features: \`$features\`
 - Criterion args: \`$CRITERION_ARGS\`
 - Pinning prefix: \`${BENCH_PIN_PREFIX:-none}\`
@@ -132,7 +152,7 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 
 ## Claim Boundary
 
-This script is the USR-10B1X authority wrapper for the Zenoh selected-wire and owned-core benchmark command shape. It writes artifacts only under the caller-selected report directory. The generated guardrail is a blocker marker, not aggregate USR-10 guard authority.
+This script is the USR-10B1X authority wrapper for the Zenoh selected-wire and owned-core full-loop command shape. Non-\`full-loop\` diagnostic selectors added by USR-10P15Z are support-only attribution rows and cannot satisfy authority closure or performance claims. It writes artifacts only under the caller-selected report directory. The generated guardrail is a blocker marker, not aggregate USR-10 guard authority.
 SUMMARY
 }
 
@@ -164,6 +184,8 @@ fi
 
 subcommand="$1"
 shift
+
+validate_diagnostic
 
 case "$subcommand" in
     baseline)

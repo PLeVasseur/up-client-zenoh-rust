@@ -38,7 +38,7 @@ use up_rust::{
 use up_rust::{
     try_project_umessage_to_frame_metadata, StableContainerWireFormat, UCode, UFrameMetadata,
     UMessage, UMessageBuilder, UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport,
-    UPayloadFormat, UStatus, UUri, UWireRx, UZeroCopyListener, UZeroCopyTransport,
+    UPayloadFormat, UStatus, UUri, UWireMetadata, UWireRx, UZeroCopyListener, UZeroCopyTransport,
     UZeroCopyUninitTransportExt, UUID,
 };
 use up_transport_zenoh::{
@@ -84,6 +84,81 @@ impl BenchProfile {
 }
 
 #[cfg(feature = "payload-contract-benchmarks")]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DiagnosticMode {
+    FullLoop,
+    PrebuiltPayload,
+    MetadataOnly,
+    TxOnly,
+    RxOnly,
+    CopyLedger,
+    ZcInitOnly,
+    ZcSendOnly,
+    ZcRxOnly,
+    ZcValidationOnly,
+    ZcFilterOnly,
+    ZcCopyLedger,
+    ZcLoanProvenanceCheck,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+impl DiagnosticMode {
+    fn from_env() -> Self {
+        match std::env::var("TRANSPORT_BENCH_DIAGNOSTIC")
+            .unwrap_or_else(|_| "full-loop".to_string())
+            .as_str()
+        {
+            "full-loop" | "full" => Self::FullLoop,
+            "prebuilt-payload" => Self::PrebuiltPayload,
+            "metadata-only" => Self::MetadataOnly,
+            "tx-only" => Self::TxOnly,
+            "rx-only" | "listener-only" => Self::RxOnly,
+            "copy-ledger" => Self::CopyLedger,
+            "zc-init-only" => Self::ZcInitOnly,
+            "zc-send-only" => Self::ZcSendOnly,
+            "zc-rx-only" => Self::ZcRxOnly,
+            "zc-validation-only" => Self::ZcValidationOnly,
+            "zc-filter-only" => Self::ZcFilterOnly,
+            "zc-copy-ledger" => Self::ZcCopyLedger,
+            "zc-loan-provenance-check" => Self::ZcLoanProvenanceCheck,
+            other => panic!("unsupported TRANSPORT_BENCH_DIAGNOSTIC selector: {other}"),
+        }
+    }
+
+    fn group_suffix(self) -> &'static str {
+        match self {
+            Self::FullLoop => "full_loop",
+            Self::PrebuiltPayload => "prebuilt_payload",
+            Self::MetadataOnly => "metadata_only",
+            Self::TxOnly => "tx_only",
+            Self::RxOnly => "rx_only",
+            Self::CopyLedger => "copy_ledger",
+            Self::ZcInitOnly => "zc_init_only",
+            Self::ZcSendOnly => "zc_send_only",
+            Self::ZcRxOnly => "zc_rx_only",
+            Self::ZcValidationOnly => "zc_validation_only",
+            Self::ZcFilterOnly => "zc_filter_only",
+            Self::ZcCopyLedger => "zc_copy_ledger",
+            Self::ZcLoanProvenanceCheck => "zc_loan_provenance_check",
+        }
+    }
+
+    fn includes_path(self, path: PayloadContractPath) -> bool {
+        match self {
+            Self::PrebuiltPayload | Self::CopyLedger => !path.is_zero_copy(),
+            Self::ZcInitOnly
+            | Self::ZcSendOnly
+            | Self::ZcRxOnly
+            | Self::ZcValidationOnly
+            | Self::ZcFilterOnly
+            | Self::ZcCopyLedger
+            | Self::ZcLoanProvenanceCheck => path.is_zero_copy(),
+            Self::FullLoop | Self::MetadataOnly | Self::TxOnly | Self::RxOnly => true,
+        }
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
 #[derive(Clone, Copy)]
 enum PayloadContractPath {
     ProtobufOwned,
@@ -100,6 +175,16 @@ impl PayloadContractPath {
             Self::StableOwnedBytes => "stable_owned_bytes_full",
         }
     }
+
+    fn is_zero_copy(self) -> bool {
+        matches!(self, Self::StableZcNoZero)
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+struct PrebuiltOwnedPayload {
+    bytes: Bytes,
+    format: UPayloadFormat,
 }
 
 struct BenchCase {
@@ -305,6 +390,49 @@ async fn send_owned(
         UOwnedFrame::without_payload(metadata)
             .map_err(|error| invalid_argument(error.to_string()))?
     };
+    transport.send_owned(frame).await
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn prebuilt_owned_payload(
+    path: PayloadContractPath,
+    contract: &PayloadContractCase,
+) -> Option<PrebuiltOwnedPayload> {
+    match path {
+        PayloadContractPath::ProtobufOwned => Some(PrebuiltOwnedPayload {
+            bytes: payload_contract::protobuf_encoded_bytes_for(
+                contract,
+                PAYLOAD_CONTRACT_SEQUENCE,
+            )
+            .expect("protobuf payload-contract bytes should build")
+            .into(),
+            format: UPayloadFormat::Protobuf,
+        }),
+        PayloadContractPath::StableOwnedBytes => {
+            let fixture =
+                payload_contract::stable_owned_fixture_for(contract, PAYLOAD_CONTRACT_SEQUENCE)
+                    .expect("stable owned fixture should build");
+            Some(PrebuiltOwnedPayload {
+                bytes: fixture.bytes.into(),
+                format: UPayloadFormat::Raw,
+            })
+        }
+        PayloadContractPath::StableZcNoZero => None,
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn send_owned_prebuilt(
+    transport: &Arc<up_rust::UWireTransport<ZenohOwnedCore, StableContainerWireFormat>>,
+    case: &BenchCase,
+    id: UUID,
+    payload: &PrebuiltOwnedPayload,
+) -> Result<(), UStatus> {
+    let message = case.message(id, payload.bytes.clone(), payload.format)?;
+    let metadata = try_project_umessage_to_frame_metadata(&message)
+        .map_err(|error| invalid_argument(error.to_string()))?;
+    let frame = UOwnedFrame::with_payload(metadata, payload.bytes.clone())
+        .map_err(|error| invalid_argument(error.to_string()))?;
     transport.send_owned(frame).await
 }
 
@@ -555,13 +683,77 @@ fn transported_len(path: PayloadContractPath, contract: &PayloadContractCase) ->
     }
 }
 
+#[cfg(feature = "payload-contract-benchmarks")]
+fn benchmark_id(
+    path: PayloadContractPath,
+    mode: DiagnosticMode,
+    contract: &PayloadContractCase,
+    expected_len: usize,
+) -> BenchmarkId {
+    BenchmarkId::new(
+        format!("{}_{}", path.label(), mode.group_suffix()),
+        format!(
+            "publish/{}/{}/{}",
+            contract.name(),
+            contract.semantic_reference_len(),
+            expected_len
+        ),
+    )
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn run_metadata_only(path: PayloadContractPath, case: &BenchCase, contract: &PayloadContractCase) {
+    let id = next_uuid();
+    let metadata = case.metadata(id);
+    let encoded = StableContainerWireFormat::encode_frame_metadata(&metadata)
+        .expect("selected-wire metadata should encode");
+    let decoded = StableContainerWireFormat::decode_frame_metadata(&encoded)
+        .expect("selected-wire metadata should decode");
+    black_box(decoded);
+    black_box(encoded.len());
+    black_box(path.label());
+    black_box(contract.name());
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn run_copy_ledger(path: PayloadContractPath, contract: &PayloadContractCase) {
+    let metadata_len = StableContainerWireFormat::encode_frame_metadata(
+        &BenchCase::new(contract.name()).metadata(next_uuid()),
+    )
+    .expect("selected-wire metadata should encode")
+    .len();
+    let payload_copied = match path {
+        PayloadContractPath::ProtobufOwned | PayloadContractPath::StableOwnedBytes => {
+            transported_len(path, contract) * 2
+        }
+        PayloadContractPath::StableZcNoZero => 0,
+    };
+    black_box(metadata_len * 2);
+    black_box(payload_copied);
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn run_zc_validation_only(contract: &PayloadContractCase) {
+    let fixture = payload_contract::stable_owned_fixture_for(contract, PAYLOAD_CONTRACT_SEQUENCE)
+        .expect("stable fixture should be available");
+    black_box(fixture.bytes.len());
+    black_box(fixture.encoding);
+    black_box(contract.semantic_reference_len());
+}
+
 fn bench_payload_contract_matrix(
     c: &mut Criterion,
     group_name: &'static str,
     payload_cases: &[PayloadContractCase],
     measurement_time: Duration,
+    diagnostic_mode: DiagnosticMode,
 ) {
     let runtime = Runtime::new().expect("tokio runtime");
+    let group_name = if diagnostic_mode == DiagnosticMode::FullLoop {
+        group_name.to_string()
+    } else {
+        format!("{group_name}_{}", diagnostic_mode.group_suffix())
+    };
     let mut group = c.benchmark_group(group_name);
     group.measurement_time(measurement_time);
     for contract in payload_cases {
@@ -570,6 +762,9 @@ fn bench_payload_contract_matrix(
             PayloadContractPath::StableZcNoZero,
             PayloadContractPath::StableOwnedBytes,
         ] {
+            if !diagnostic_mode.includes_path(path) {
+                continue;
+            }
             let case = BenchCase::new(contract.name());
             let expected_len = transported_len(path, contract);
             let (tx, mut rx) = mpsc::unbounded_channel();
@@ -598,51 +793,85 @@ fn bench_payload_contract_matrix(
                 }
                 PayloadContractPath::ProtobufOwned | PayloadContractPath::StableOwnedBytes => None,
             };
+            let prebuilt_payload = prebuilt_owned_payload(path, contract);
 
             group.bench_function(
-                BenchmarkId::new(
-                    path.label(),
-                    format!(
-                        "publish/{}/{}/{}",
-                        contract.name(),
-                        contract.semantic_reference_len(),
-                        expected_len
-                    ),
-                ),
+                benchmark_id(path, diagnostic_mode, contract, expected_len),
                 |b| {
-                    b.iter(|| {
-                        runtime.block_on(async {
-                            let id = next_uuid();
-                            match path {
-                                PayloadContractPath::ProtobufOwned
-                                | PayloadContractPath::StableOwnedBytes => {
-                                    send_owned(
-                                        owned_transport.as_ref().expect("owned transport"),
-                                        path,
-                                        &case,
-                                        id.clone(),
-                                        contract,
-                                    )
-                                    .await
-                                    .expect("owned benchmark send should succeed");
+                    b.iter(|| match diagnostic_mode {
+                        DiagnosticMode::MetadataOnly | DiagnosticMode::ZcFilterOnly => {
+                            run_metadata_only(path, &case, contract);
+                        }
+                        DiagnosticMode::CopyLedger | DiagnosticMode::ZcCopyLedger => {
+                            run_copy_ledger(path, contract);
+                        }
+                        DiagnosticMode::ZcValidationOnly => {
+                            run_zc_validation_only(contract);
+                        }
+                        DiagnosticMode::ZcInitOnly => {
+                            black_box(case.metadata(next_uuid()));
+                            black_box(transported_len(path, contract));
+                            black_box(contract.semantic_reference_len());
+                        }
+                        DiagnosticMode::FullLoop
+                        | DiagnosticMode::PrebuiltPayload
+                        | DiagnosticMode::TxOnly
+                        | DiagnosticMode::RxOnly
+                        | DiagnosticMode::ZcSendOnly
+                        | DiagnosticMode::ZcRxOnly
+                        | DiagnosticMode::ZcLoanProvenanceCheck => {
+                            runtime.block_on(async {
+                                let id = next_uuid();
+                                match path {
+                                    PayloadContractPath::ProtobufOwned
+                                    | PayloadContractPath::StableOwnedBytes => {
+                                        if diagnostic_mode == DiagnosticMode::PrebuiltPayload {
+                                            send_owned_prebuilt(
+                                                owned_transport.as_ref().expect("owned transport"),
+                                                &case,
+                                                id.clone(),
+                                                prebuilt_payload
+                                                    .as_ref()
+                                                    .expect("prebuilt owned payload"),
+                                            )
+                                            .await
+                                            .expect("owned prebuilt benchmark send should succeed");
+                                        } else {
+                                            send_owned(
+                                                owned_transport.as_ref().expect("owned transport"),
+                                                path,
+                                                &case,
+                                                id.clone(),
+                                                contract,
+                                            )
+                                            .await
+                                            .expect("owned benchmark send should succeed");
+                                        }
+                                    }
+                                    PayloadContractPath::StableZcNoZero => {
+                                        send_selected_wire(
+                                            selected_transport
+                                                .as_ref()
+                                                .expect("selected-wire transport"),
+                                            case.metadata(id.clone()),
+                                            contract,
+                                        )
+                                        .await
+                                        .expect("selected-wire benchmark send should succeed");
+                                    }
                                 }
-                                PayloadContractPath::StableZcNoZero => {
-                                    send_selected_wire(
-                                        selected_transport
-                                            .as_ref()
-                                            .expect("selected-wire transport"),
-                                        case.metadata(id.clone()),
-                                        contract,
-                                    )
-                                    .await
-                                    .expect("selected-wire benchmark send should succeed");
+                                if !matches!(
+                                    diagnostic_mode,
+                                    DiagnosticMode::TxOnly | DiagnosticMode::ZcSendOnly
+                                ) {
+                                    let ack =
+                                        wait_for_ack(&mut rx, &id, contract, expected_len).await;
+                                    black_box(ack.semantic_reference_len);
+                                    black_box(ack.transported_payload_len);
                                 }
-                            }
-                            let ack = wait_for_ack(&mut rx, &id, contract, expected_len).await;
-                            black_box(ack.semantic_reference_len);
-                            black_box(ack.transported_payload_len);
-                            black_box(contract.name());
-                        });
+                                black_box(contract.name());
+                            });
+                        }
                     });
                 },
             );
@@ -665,12 +894,14 @@ fn bench_transport(c: &mut Criterion) {
 
 #[cfg(feature = "payload-contract-benchmarks")]
 fn bench_payload_contract(c: &mut Criterion, profile: BenchProfile) {
+    let diagnostic_mode = DiagnosticMode::from_env();
     if profile.includes_core() {
         bench_payload_contract_matrix(
             c,
             "transport_payload_contract_core",
             payload_contract::core_cases(),
             BENCH_TIMEOUT,
+            diagnostic_mode,
         );
     }
     if profile.includes_camera() {
@@ -679,6 +910,7 @@ fn bench_payload_contract(c: &mut Criterion, profile: BenchProfile) {
             "transport_payload_contract_large_sensor",
             payload_contract::large_sensor_cases(),
             LARGE_SENSOR_BENCH_TIMEOUT,
+            diagnostic_mode,
         );
     }
 }
