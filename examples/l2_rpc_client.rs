@@ -54,7 +54,8 @@ async fn main() {
         .unwrap();
 
     // process the result
-    let payload = result.unwrap().payload();
-    let value = payload.into_iter().map(|c| c as char).collect::<String>();
+    let result_payload = result.unwrap();
+    let payload = result_payload.payload();
+    let value = payload.into_iter().map(|c| *c as char).collect::<String>();
     println!("Receive {value}");
 }

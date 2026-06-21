@@ -24,11 +24,9 @@ use tokio::{
 };
 use tracing::{error, warn};
 use up_rust::{
-    up_core_api::{
-        uattributes::UAttributes as UAttributesProto, umessage::UMessage as UMessageProto,
-    },
-    ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage,
-    UMessageType, UStatus, UTransport, UUri,
+    try_project_frame_to_umessage, ComparableListener, PayloadEncoding, UAttributes,
+    UAttributesValidators, UCode, UFrameMetadata, UListener, UMessage, UMessageType,
+    UPayloadFormat, UStatus, UTransport, UUri,
 };
 use zenoh::{
     key_expr::keyexpr,
@@ -69,12 +67,25 @@ fn message_from_parts(
     attributes: &UAttributes,
     payload: Option<Bytes>,
 ) -> Result<UMessage, UStatus> {
-    let proto = UMessageProto {
-        attributes: Some(UAttributesProto::from(attributes)).into(),
-        payload,
-        ..Default::default()
+    let payload_encoding = match (payload.as_ref(), attributes.payload_format()) {
+        (Some(_), Some(format)) if format != UPayloadFormat::Unspecified => {
+            Some(PayloadEncoding::Standard(format))
+        }
+        (None, _) => None,
+        _ => {
+            return Err(UStatus::fail_with_code(
+                UCode::InvalidArgument,
+                "Zenoh sample payload requires concrete payload_format metadata",
+            ));
+        }
     };
-    UMessage::try_from(&proto).map_err(|err| {
+    let metadata = UFrameMetadata::new(attributes.clone(), payload_encoding).map_err(|err| {
+        UStatus::fail_with_code(
+            UCode::InvalidArgument,
+            format!("Unable to create UFrameMetadata from Zenoh sample: {err}"),
+        )
+    })?;
+    try_project_frame_to_umessage(metadata, payload).map_err(|err| {
         UStatus::fail_with_code(
             UCode::InvalidArgument,
             format!("Unable to create UMessage from Zenoh sample: {err}"),

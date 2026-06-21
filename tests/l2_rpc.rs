@@ -45,8 +45,9 @@ impl RequestHandler for ExampleHandler {
         _attributes: &up_rust::UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        let payload = request_payload.unwrap().payload();
-        let data = payload.into_iter().map(|c| c as char).collect::<String>();
+        let request_payload = request_payload.unwrap();
+        let payload = request_payload.payload();
+        let data = payload.into_iter().map(|c| *c as char).collect::<String>();
         // compare the request data
         assert_eq!(data, self.request_data);
         // return
@@ -101,7 +102,8 @@ async fn test_l2_rpc() {
         .unwrap();
 
     // Process the result
-    let payload = result.unwrap().payload();
-    let value = payload.into_iter().map(|c| c as char).collect::<String>();
+    let result_payload = result.unwrap();
+    let payload = result_payload.payload();
+    let value = payload.into_iter().map(|c| *c as char).collect::<String>();
     assert_eq!(response_data, value);
 }

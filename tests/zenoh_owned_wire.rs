@@ -11,9 +11,9 @@ use bytes::Bytes;
 use serial_test::serial;
 use tokio::sync::mpsc;
 use up_rust::{
-    PayloadEncoding, PayloadFormat, ProtobufWire, UCode, UFrameMetadata, UMessageBuilder,
-    UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UProtocolNativeWire, UUri,
-    UWireMetadata,
+    NativePrefixProtobufMetadataCodec, PayloadEncoding, PayloadFormat, ProtobufWire, UCode,
+    UFrameMetadata, UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat,
+    UProtocolNativeWire, UUri, UWire, UWireMetadataCodec,
 };
 use up_transport_zenoh::{zenoh_config, ZenohOwnedCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -34,7 +34,9 @@ fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMe
     UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
 }
 
-async fn owned_transport<W>(authority: &str) -> Arc<up_rust::UWireTransport<ZenohOwnedCore, W>>
+async fn owned_transport<W>(
+    authority: &str,
+) -> Arc<up_rust::UWireTransport<ZenohOwnedCore, W, NativePrefixProtobufMetadataCodec>>
 where
     W: up_rust::UWire + Default,
 {
@@ -98,7 +100,7 @@ async fn assert_owned_round_trip<W>(
     payload: Bytes,
 ) -> Result<(), TestError>
 where
-    W: up_rust::UWire + UWireMetadata + Default + Send + Sync + 'static,
+    W: UWire + Default + Send + Sync + 'static,
 {
     let transport = owned_transport::<W>(authority).await;
     let source = topic_for(authority, 0x9000);
@@ -151,10 +153,13 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() -> Re
         tokio::spawn(async move { receiver.receive_owned(&receive_source, None).await });
     allow_subscriber_matching().await;
 
-    let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(
-        source.clone(),
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    ))?;
+    let wrong_metadata = NativePrefixProtobufMetadataCodec.encode_frame_metadata(
+        ProtobufWire::metadata_context(),
+        &metadata(
+            source.clone(),
+            Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+        ),
+    )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
 
     let error = receive_task.await?.expect_err("wrong metadata rejected");
@@ -174,10 +179,13 @@ async fn owned_core_malformed_listener_metadata_is_not_delivered() -> Result<(),
         .await?;
     allow_subscriber_matching().await;
 
-    let wrong_metadata = ProtobufWire::encode_frame_metadata(&metadata(
-        source.clone(),
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    ))?;
+    let wrong_metadata = NativePrefixProtobufMetadataCodec.encode_frame_metadata(
+        ProtobufWire::metadata_context(),
+        &metadata(
+            source.clone(),
+            Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+        ),
+    )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
 
     if let Ok(Some(payload)) =

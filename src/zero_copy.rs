@@ -22,10 +22,10 @@ use std::{
 use async_trait::async_trait;
 use tracing::{trace, warn};
 use up_rust::{
-    LoanedPayload, PayloadLoanProvenance, PreparedTxLoanSpec, UCode, UEncodedLoanedRxFrame,
-    UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata, UStatus, UTxBuffer, UUninitTxBuffer,
-    UUri, UWire, UWireError, UWireTransport, UWithWire, UZeroCopyTransportCore,
-    UZeroCopyUninitTransportCore,
+    LoanedPayload, NativePrefixProtobufMetadataCodec, PayloadLoanProvenance, PreparedTxLoanSpec,
+    UCode, UEncodedLoanedRxFrame, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata,
+    UStatus, UTxBuffer, UUninitTxBuffer, UUri, UWire, UWireError, UWireTransport,
+    UZeroCopyTransportCore, UZeroCopyUninitTransportCore,
 };
 use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
@@ -97,11 +97,14 @@ impl ZenohZeroCopyCore {
 
     /// Wraps this core in the generic selected-wire adapter.
     #[must_use]
-    pub fn with_selected_wire<W>(self, wire: W) -> UWireTransport<Self, W>
+    pub fn with_selected_wire<W>(
+        self,
+        wire: W,
+    ) -> UWireTransport<Self, W, NativePrefixProtobufMetadataCodec>
     where
         W: UWire,
     {
-        self.with_wire(wire)
+        UWireTransport::new(self, wire, NativePrefixProtobufMetadataCodec)
     }
 }
 

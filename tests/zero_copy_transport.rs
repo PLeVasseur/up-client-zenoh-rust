@@ -19,11 +19,12 @@ use async_trait::async_trait;
 use serial_test::serial;
 use tokio::sync::mpsc;
 use up_rust::{
-    PayloadEncoding, PayloadFormat, PayloadLoanProvenance, ProtobufWire, UCode, UFrameMetadata,
-    UFrameView, ULoanedContiguousZeroCopyRxFrame, UMessageBuilder, UPayloadFormat,
-    UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri, UWire, UWireMetadata,
-    UWireRx, UZeroCopyListener, UZeroCopyTransport, UZeroCopyUninitTransport,
-    NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, NATIVE_PREFIX_METADATA_LAYOUT_ID, PROTOBUF_WIRE_ID,
+    NativePrefixProtobufMetadataCodec, PayloadEncoding, PayloadFormat, PayloadLoanProvenance,
+    ProtobufWire, UCode, UFrameMetadata, UFrameView, ULoanedContiguousZeroCopyRxFrame,
+    UMessageBuilder, UPayloadFormat, UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUninitTxBuffer,
+    UUri, UWire, UWireMetadataCodec, UWireRx, UZeroCopyListener, UZeroCopyTransport,
+    UZeroCopyUninitTransport, NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, NATIVE_PREFIX_METADATA_LAYOUT_ID,
+    PROTOBUF_WIRE_ID,
 };
 use up_transport_zenoh::{zenoh_config, ZenohRxFrame, ZenohZeroCopyCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -173,7 +174,7 @@ async fn assert_zero_copy_prepared_metadata<W>(
     payload: &[u8],
 ) -> Result<(), TestError>
 where
-    W: UWireMetadata + Default + Send + Sync + 'static,
+    W: UWire + Default + Send + Sync + 'static,
 {
     let authority = format!("zenoh-zcs-loan-{}-{}", std::process::id(), payload.len());
     let transport = test_core(&authority).await.with_selected_wire(W::default());
@@ -194,7 +195,9 @@ where
 
     let attachment = tx.attachment_bytes();
     assert_eq!(
-        W::decode_frame_metadata(&attachment).expect("decode metadata"),
+        NativePrefixProtobufMetadataCodec
+            .decode_frame_metadata(W::metadata_context(), &attachment)
+            .expect("decode metadata"),
         metadata
     );
     Ok(())
@@ -473,7 +476,8 @@ async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame
         source.clone(),
         Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
     );
-    let attachment = ProtobufWire::encode_frame_metadata(&metadata)?;
+    let attachment = NativePrefixProtobufMetadataCodec
+        .encode_frame_metadata(ProtobufWire::metadata_context(), &metadata)?;
     let receive_source = source.clone();
     let receive_task =
         tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
@@ -555,7 +559,8 @@ async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), Tes
     publish_raw_zenoh(
         &source,
         None,
-        ProtobufWire::encode_frame_metadata(&metadata)?,
+        NativePrefixProtobufMetadataCodec
+            .encode_frame_metadata(ProtobufWire::metadata_context(), &metadata)?,
         b"not-shm-listener",
     )
     .await?;
@@ -657,11 +662,15 @@ impl<W> PayloadSender<W> {
 }
 
 #[async_trait]
-impl<W> UZeroCopyListener<UWireRx<ZenohRxFrame, W>> for PayloadSender<W>
+impl<W> UZeroCopyListener<UWireRx<ZenohRxFrame, W, NativePrefixProtobufMetadataCodec>>
+    for PayloadSender<W>
 where
-    W: UWireMetadata + Send + Sync + 'static,
+    W: UWire + Send + Sync + 'static,
 {
-    async fn on_receive_zero_copy(&self, frame: UWireRx<ZenohRxFrame, W>) {
+    async fn on_receive_zero_copy(
+        &self,
+        frame: UWireRx<ZenohRxFrame, W, NativePrefixProtobufMetadataCodec>,
+    ) {
         let mut payload = Vec::new();
         frame
             .payload_reader()
