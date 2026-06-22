@@ -42,7 +42,11 @@ Environment:
                               rx-only, listener-only, copy-ledger, zc-init-only,
                               zc-send-only, zc-rx-only, zc-validation-only,
                               zc-filter-only, zc-copy-ledger, or
-                              zc-loan-provenance-check. Default: full-loop
+                              zc-loan-provenance-check, owned-payload-build-only,
+                              owned-frame-build-only, owned-rx-no-validation,
+                              zc-payload-init-only, or zc-rx-no-validation.
+                              Default: full-loop
+  TRANSPORT_BENCH_CASE_FILTER Optional comma-separated fixture-name filter.
   CRITERION_ARGS              Criterion args. Default matches USR-10B1 C1.
   BENCH_PIN_PREFIX            Optional command prefix for CPU pinning, etc.
   CARGO_BIN                   Cargo command. Default: cargo
@@ -63,7 +67,7 @@ cargo_features() {
 
 validate_diagnostic() {
     case "$TRANSPORT_BENCH_DIAGNOSTIC" in
-        full-loop | full | prebuilt-payload | metadata-only | tx-only | rx-only | listener-only | copy-ledger | zc-init-only | zc-send-only | zc-rx-only | zc-validation-only | zc-filter-only | zc-copy-ledger | zc-loan-provenance-check) ;;
+        full-loop | full | prebuilt-payload | metadata-only | tx-only | rx-only | listener-only | copy-ledger | zc-init-only | zc-send-only | zc-rx-only | zc-validation-only | zc-filter-only | zc-copy-ledger | zc-loan-provenance-check | owned-payload-build-only | owned-frame-build-only | owned-rx-no-validation | zc-payload-init-only | zc-rx-no-validation) ;;
         *)
             printf 'unsupported TRANSPORT_BENCH_DIAGNOSTIC: %s\n' "$TRANSPORT_BENCH_DIAGNOSTIC" >&2
             exit 2
@@ -95,11 +99,13 @@ run_cargo_bench() {
         TRANSPORT_BENCH_SUITE="$TRANSPORT_BENCH_SUITE" \
             TRANSPORT_BENCH_PROFILE="$TRANSPORT_BENCH_PROFILE" \
             TRANSPORT_BENCH_DIAGNOSTIC="$TRANSPORT_BENCH_DIAGNOSTIC" \
+            TRANSPORT_BENCH_CASE_FILTER="${TRANSPORT_BENCH_CASE_FILTER:-}" \
             "${pin_parts[@]}" "${cargo_parts[@]}" bench --features "$features" --bench transport_criterion -- "${criterion_parts[@]}" "$@"
     else
         TRANSPORT_BENCH_SUITE="$TRANSPORT_BENCH_SUITE" \
             TRANSPORT_BENCH_PROFILE="$TRANSPORT_BENCH_PROFILE" \
             TRANSPORT_BENCH_DIAGNOSTIC="$TRANSPORT_BENCH_DIAGNOSTIC" \
+            TRANSPORT_BENCH_CASE_FILTER="${TRANSPORT_BENCH_CASE_FILTER:-}" \
             "${cargo_parts[@]}" bench --features "$features" --bench transport_criterion -- "${criterion_parts[@]}" "$@"
     fi
 }
@@ -139,6 +145,7 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 - Suite: \`$TRANSPORT_BENCH_SUITE\`
 - Profile: \`$TRANSPORT_BENCH_PROFILE\`
 - Diagnostic selector: \`$TRANSPORT_BENCH_DIAGNOSTIC\`
+- Case filter: \`${TRANSPORT_BENCH_CASE_FILTER:-none}\`
 - Features: \`$features\`
 - Criterion args: \`$CRITERION_ARGS\`
 - Pinning prefix: \`${BENCH_PIN_PREFIX:-none}\`
