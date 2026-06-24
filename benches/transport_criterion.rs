@@ -13,7 +13,17 @@
 
 #![allow(clippy::missing_panics_doc, clippy::too_many_lines)]
 
-use std::{sync::Arc, time::Duration, time::SystemTime};
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    collections::HashSet,
+    io::Cursor,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+    time::Duration,
+    time::SystemTime,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -37,14 +47,16 @@ use up_rust::{
 };
 use up_rust::{
     try_project_umessage_to_frame_metadata, NativePrefixProtobufMetadataCodec,
-    StableContainerWireFormat, UCode, UFrameMetadata, UMessage, UMessageBuilder, UMessageType,
-    UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UStatus, UUri, UWire,
-    UWireMetadataCodec, UWireRx, UZeroCopyListener, UZeroCopyTransport,
-    UZeroCopyUninitTransportExt, UUID,
+    StableContainerWireFormat, UCode, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata,
+    UFrameView, UMessage, UMessageBuilder, UMessageType, UOwnedFrame, UOwnedListener,
+    UOwnedTransport, UPayloadFormat, UStatus, UUri, UWire, UWireMetadataCodec, UWireRx,
+    UZeroCopyListener, UZeroCopyTransport, UZeroCopyTransportCore, UZeroCopyUninitTransportExt,
+    UUID,
 };
 use up_transport_zenoh::{
     zenoh_config, UPTransportZenoh, ZenohOwnedCore, ZenohRxFrame, ZenohZeroCopyCore,
 };
+use zenoh::bytes::ZBytes;
 
 const BENCH_TIMEOUT: Duration = Duration::from_secs(5);
 const LARGE_SENSOR_BENCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,6 +64,44 @@ const ZENOH_SHM_SEGMENT_SIZE: usize = 64 * 1_024 * 1_024;
 const UUID_LSB_BASE: u64 = 0x8000_0000_0000_0000;
 #[cfg(feature = "payload-contract-benchmarks")]
 const PAYLOAD_CONTRACT_SEQUENCE: u32 = 1;
+
+struct CountingAllocator;
+
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        System.alloc(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        System.dealloc(ptr, layout);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct AllocationSample {
+    allocations: usize,
+    bytes: usize,
+}
+
+fn reset_allocations() {
+    ALLOCATIONS.store(0, Ordering::Relaxed);
+    ALLOCATED_BYTES.store(0, Ordering::Relaxed);
+}
+
+fn allocation_sample() -> AllocationSample {
+    AllocationSample {
+        allocations: ALLOCATIONS.load(Ordering::Relaxed),
+        bytes: ALLOCATED_BYTES.load(Ordering::Relaxed),
+    }
+}
 
 #[derive(Clone, Copy)]
 enum BenchProfile {
@@ -99,6 +149,10 @@ enum DiagnosticMode {
     ZcValidationOnly,
     ZcFilterOnly,
     ZcCopyLedger,
+    ZcRxZenohDeliveryOnly,
+    ZcRxAttachmentDecodeOnly,
+    ZcRxAdapterFilterDropOnly,
+    ZcRxListenerDispatchOnly,
     ZcLoanProvenanceCheck,
     OwnedPayloadBuildOnly,
     OwnedFrameBuildOnly,
@@ -126,6 +180,10 @@ impl DiagnosticMode {
             "zc-validation-only" => Self::ZcValidationOnly,
             "zc-filter-only" => Self::ZcFilterOnly,
             "zc-copy-ledger" => Self::ZcCopyLedger,
+            "zc-rx-zenoh-delivery-only" => Self::ZcRxZenohDeliveryOnly,
+            "zc-rx-attachment-decode-only" => Self::ZcRxAttachmentDecodeOnly,
+            "zc-rx-adapter-filter-drop-only" => Self::ZcRxAdapterFilterDropOnly,
+            "zc-rx-listener-dispatch-only" => Self::ZcRxListenerDispatchOnly,
             "zc-loan-provenance-check" => Self::ZcLoanProvenanceCheck,
             "owned-payload-build-only" => Self::OwnedPayloadBuildOnly,
             "owned-frame-build-only" => Self::OwnedFrameBuildOnly,
@@ -150,6 +208,10 @@ impl DiagnosticMode {
             Self::ZcValidationOnly => "zc_validation_only",
             Self::ZcFilterOnly => "zc_filter_only",
             Self::ZcCopyLedger => "zc_copy_ledger",
+            Self::ZcRxZenohDeliveryOnly => "zc_rx_zenoh_delivery_only",
+            Self::ZcRxAttachmentDecodeOnly => "zc_rx_attachment_decode_only",
+            Self::ZcRxAdapterFilterDropOnly => "zc_rx_adapter_filter_drop_only",
+            Self::ZcRxListenerDispatchOnly => "zc_rx_listener_dispatch_only",
             Self::ZcLoanProvenanceCheck => "zc_loan_provenance_check",
             Self::OwnedPayloadBuildOnly => "owned_payload_build_only",
             Self::OwnedFrameBuildOnly => "owned_frame_build_only",
@@ -172,6 +234,10 @@ impl DiagnosticMode {
             | Self::ZcValidationOnly
             | Self::ZcFilterOnly
             | Self::ZcCopyLedger
+            | Self::ZcRxZenohDeliveryOnly
+            | Self::ZcRxAttachmentDecodeOnly
+            | Self::ZcRxAdapterFilterDropOnly
+            | Self::ZcRxListenerDispatchOnly
             | Self::ZcLoanProvenanceCheck
             | Self::ZcPayloadInitOnly
             | Self::ZcRxNoValidation => path.is_zero_copy(),
@@ -262,6 +328,105 @@ struct PayloadContractAck {
 }
 
 #[cfg(feature = "payload-contract-benchmarks")]
+#[derive(Clone)]
+struct BenchEncodedRxFrame {
+    encoded_metadata: Vec<u8>,
+    payload: Bytes,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+impl BenchEncodedRxFrame {
+    fn new(encoded_metadata: Vec<u8>, payload_len: usize) -> Self {
+        Self {
+            encoded_metadata,
+            payload: Bytes::from(vec![0; payload_len]),
+        }
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+impl UEncodedRxFrame for BenchEncodedRxFrame {
+    type PayloadReader<'a>
+        = Cursor<&'a [u8]>
+    where
+        Self: 'a;
+    type PayloadSlices<'a>
+        = std::iter::Once<&'a [u8]>
+    where
+        Self: 'a;
+
+    fn encoded_metadata(&self) -> &[u8] {
+        &self.encoded_metadata
+    }
+
+    fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+
+    fn payload_reader(&self) -> Self::PayloadReader<'_> {
+        Cursor::new(self.payload.as_ref())
+    }
+
+    fn payload_slices(&self) -> Self::PayloadSlices<'_> {
+        std::iter::once(self.payload.as_ref())
+    }
+
+    fn try_contiguous_payload(&self) -> Option<&[u8]> {
+        Some(self.payload.as_ref())
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+struct RawDeliveryAck {
+    id: UUID,
+    payload_len: usize,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+struct RawDeliveryListener {
+    tx: mpsc::UnboundedSender<RawDeliveryAck>,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[async_trait]
+impl UEncodedZeroCopyListener<ZenohRxFrame> for RawDeliveryListener {
+    async fn on_receive_encoded_zero_copy(&self, frame: ZenohRxFrame) {
+        let decoded = NativePrefixProtobufMetadataCodec
+            .decode_frame_metadata(
+                StableContainerWireFormat::metadata_context(),
+                frame.encoded_metadata(),
+            )
+            .expect("raw Zenoh delivery metadata should decode");
+        self.tx
+            .send(RawDeliveryAck {
+                id: decoded.attributes().id().clone(),
+                payload_len: frame.payload_len(),
+            })
+            .expect("raw Zenoh delivery channel should remain open");
+    }
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+#[derive(Default)]
+struct ZenohAttributionSample {
+    publish_attempts: usize,
+    exact_deliveries: usize,
+    wildcard_deliveries: usize,
+    zenoh_prefiltered_count: usize,
+    adapter_dropped_count: usize,
+    listener_dispatched_count: usize,
+    attachment_metadata_bytes: usize,
+    metadata_copy_bytes: usize,
+    payload_copy_bytes: usize,
+    attachment_encode_allocations: usize,
+    attachment_encode_bytes: usize,
+    attachment_decode_allocations: usize,
+    attachment_decode_bytes: usize,
+    receive_drop_allocations: usize,
+    receive_drop_bytes: usize,
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
 struct OwnedAckListener {
     tx: mpsc::UnboundedSender<PayloadContractAck>,
     contract: PayloadContractCase,
@@ -349,6 +514,33 @@ async fn build_selected_wire_transport(
         .await
         .expect("Zenoh selected-wire benchmark core should build");
     Arc::new(core.with_selected_wire(StableContainerWireFormat))
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn build_raw_selected_wire_core(authority: &str) -> Arc<ZenohZeroCopyCore> {
+    let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+        .with_config(zenoh_config::Config::default())
+        .with_shm_segment_size(ZENOH_SHM_SEGMENT_SIZE)
+        .expect("valid Zenoh SHM segment size")
+        .build()
+        .await
+        .expect("raw Zenoh selected-wire benchmark core should build");
+    Arc::new(core)
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn register_raw_delivery_listener(
+    core: &Arc<ZenohZeroCopyCore>,
+    source_filter: &UUri,
+    tx: mpsc::UnboundedSender<RawDeliveryAck>,
+) {
+    core.register_encoded_zero_copy_listener(
+        source_filter,
+        None,
+        Arc::new(RawDeliveryListener { tx }),
+    )
+    .await
+    .expect("raw Zenoh delivery listener should register");
 }
 
 async fn register_owned_listener(
@@ -868,21 +1060,275 @@ fn run_metadata_only(path: PayloadContractPath, case: &BenchCase, contract: &Pay
 
 #[cfg(feature = "payload-contract-benchmarks")]
 fn run_copy_ledger(path: PayloadContractPath, contract: &PayloadContractCase) {
-    let metadata_len = NativePrefixProtobufMetadataCodec
-        .encode_frame_metadata(
-            StableContainerWireFormat::metadata_context(),
-            &BenchCase::new(contract.name()).metadata(next_uuid()),
-        )
-        .expect("selected-wire metadata should encode")
-        .len();
+    let metadata = BenchCase::new(contract.name()).metadata(next_uuid());
+    reset_allocations();
+    let encoded = NativePrefixProtobufMetadataCodec
+        .encode_frame_metadata(StableContainerWireFormat::metadata_context(), &metadata)
+        .expect("selected-wire metadata should encode");
+    let encode_allocations = allocation_sample();
+    let attachment_metadata_bytes = encoded.len();
+    reset_allocations();
+    let attachment = ZBytes::from(encoded.clone());
+    let attachment_encode_allocations = allocation_sample();
+    reset_allocations();
+    let decoded_attachment = attachment.to_bytes().to_vec();
+    let attachment_decode_allocations = allocation_sample();
     let payload_copied = match path {
         PayloadContractPath::ProtobufOwned | PayloadContractPath::StableOwnedBytes => {
             transported_len(path, contract) * 2
         }
         PayloadContractPath::StableZcNoZero => 0,
     };
-    black_box(metadata_len * 2);
+    emit_zenoh_sample(
+        path,
+        DiagnosticMode::ZcCopyLedger,
+        contract,
+        ZenohAttributionSample {
+            attachment_metadata_bytes,
+            metadata_copy_bytes: attachment_metadata_bytes * 2,
+            payload_copy_bytes: payload_copied,
+            attachment_encode_allocations: encode_allocations.allocations
+                + attachment_encode_allocations.allocations,
+            attachment_encode_bytes: encode_allocations.bytes + attachment_encode_allocations.bytes,
+            attachment_decode_allocations: attachment_decode_allocations.allocations,
+            attachment_decode_bytes: attachment_decode_allocations.bytes,
+            ..ZenohAttributionSample::default()
+        },
+    );
+    black_box(decoded_attachment);
+    black_box(attachment_metadata_bytes * 2);
     black_box(payload_copied);
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn encoded_metadata_for(case: &BenchCase, id: UUID) -> Vec<u8> {
+    NativePrefixProtobufMetadataCodec
+        .encode_frame_metadata(
+            StableContainerWireFormat::metadata_context(),
+            &case.metadata(id),
+        )
+        .expect("selected-wire metadata should encode")
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn run_zc_attachment_decode_only(
+    path: PayloadContractPath,
+    case: &BenchCase,
+    contract: &PayloadContractCase,
+) {
+    let encoded = encoded_metadata_for(case, next_uuid());
+    let attachment = ZBytes::from(encoded.clone());
+    reset_allocations();
+    let decoded = attachment.to_bytes().to_vec();
+    let sample = allocation_sample();
+    emit_zenoh_sample(
+        path,
+        DiagnosticMode::ZcRxAttachmentDecodeOnly,
+        contract,
+        ZenohAttributionSample {
+            attachment_metadata_bytes: encoded.len(),
+            attachment_decode_allocations: sample.allocations,
+            attachment_decode_bytes: sample.bytes,
+            ..ZenohAttributionSample::default()
+        },
+    );
+    black_box(decoded);
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn run_zc_adapter_filter_drop_only(
+    path: PayloadContractPath,
+    matching_case: &BenchCase,
+    contract: &PayloadContractCase,
+) {
+    let nonmatching_case = BenchCase {
+        authority: matching_case.authority.clone(),
+        source: uri(
+            &matching_case.authority,
+            0x4210,
+            resource_id(0xA000, next_sequence()),
+        ),
+    };
+    let raw = BenchEncodedRxFrame::new(encoded_metadata_for(&nonmatching_case, next_uuid()), 0);
+    reset_allocations();
+    let frame = UWireRx::<
+        BenchEncodedRxFrame,
+        StableContainerWireFormat,
+        NativePrefixProtobufMetadataCodec,
+    >::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
+    .expect("benchmark encoded frame should decode");
+    let matches = matching_case
+        .source
+        .matches(frame.metadata().attributes().source());
+    let sample = allocation_sample();
+    assert!(!matches, "nonmatching frame should be adapter-dropped");
+    emit_zenoh_sample(
+        path,
+        DiagnosticMode::ZcRxAdapterFilterDropOnly,
+        contract,
+        ZenohAttributionSample {
+            adapter_dropped_count: 1,
+            receive_drop_allocations: sample.allocations,
+            receive_drop_bytes: sample.bytes,
+            ..ZenohAttributionSample::default()
+        },
+    );
+    black_box(frame.payload_len());
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn run_zc_listener_dispatch_only(
+    path: PayloadContractPath,
+    case: &BenchCase,
+    contract: &PayloadContractCase,
+) {
+    let raw = BenchEncodedRxFrame::new(encoded_metadata_for(case, next_uuid()), 0);
+    let frame = UWireRx::<
+        BenchEncodedRxFrame,
+        StableContainerWireFormat,
+        NativePrefixProtobufMetadataCodec,
+    >::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
+    .expect("benchmark encoded frame should decode");
+    let ack = PayloadContractAck {
+        id: frame.metadata().attributes().id().clone(),
+        message_type: frame.metadata().attributes().type_(),
+        case_id: contract.case_id(),
+        sequence: PAYLOAD_CONTRACT_SEQUENCE,
+        semantic_reference_len: contract.semantic_reference_len(),
+        transported_payload_len: frame.payload_len(),
+    };
+    emit_zenoh_sample(
+        path,
+        DiagnosticMode::ZcRxListenerDispatchOnly,
+        contract,
+        ZenohAttributionSample {
+            listener_dispatched_count: 1,
+            ..ZenohAttributionSample::default()
+        },
+    );
+    black_box(ack);
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+async fn run_zc_rx_zenoh_delivery_only(
+    transport: &Arc<
+        up_rust::UWireTransport<
+            ZenohZeroCopyCore,
+            StableContainerWireFormat,
+            NativePrefixProtobufMetadataCodec,
+        >,
+    >,
+    exact_case: &BenchCase,
+    nonmatching_case: &BenchCase,
+    contract: &PayloadContractCase,
+    exact_rx: &mut mpsc::UnboundedReceiver<RawDeliveryAck>,
+    wildcard_rx: &mut mpsc::UnboundedReceiver<RawDeliveryAck>,
+) {
+    let exact_id = next_uuid();
+    let nonmatching_id = next_uuid();
+    send_selected_wire(transport, exact_case.metadata(exact_id.clone()), contract)
+        .await
+        .expect("exact selected-wire benchmark send should succeed");
+    send_selected_wire(
+        transport,
+        nonmatching_case.metadata(nonmatching_id.clone()),
+        contract,
+    )
+    .await
+    .expect("nonmatching selected-wire benchmark send should succeed");
+
+    let mut exact_deliveries = 0;
+    let mut wildcard_deliveries = 0;
+    let deadline = Instant::now() + BENCH_TIMEOUT;
+    loop {
+        while let Ok(ack) = exact_rx.try_recv() {
+            if ack.id == exact_id || ack.id == nonmatching_id {
+                exact_deliveries += 1;
+                black_box(ack.payload_len);
+            }
+        }
+        while let Ok(ack) = wildcard_rx.try_recv() {
+            if ack.id == exact_id || ack.id == nonmatching_id {
+                wildcard_deliveries += 1;
+                black_box(ack.payload_len);
+            }
+        }
+        if exact_deliveries >= 1 && wildcard_deliveries >= 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            while let Ok(ack) = exact_rx.try_recv() {
+                if ack.id == exact_id || ack.id == nonmatching_id {
+                    exact_deliveries += 1;
+                    black_box(ack.payload_len);
+                }
+            }
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for raw Zenoh delivery attribution"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    let zenoh_prefiltered_count = 2usize.saturating_sub(exact_deliveries);
+    emit_zenoh_sample(
+        PayloadContractPath::StableZcNoZero,
+        DiagnosticMode::ZcRxZenohDeliveryOnly,
+        contract,
+        ZenohAttributionSample {
+            publish_attempts: 2,
+            exact_deliveries,
+            wildcard_deliveries,
+            zenoh_prefiltered_count,
+            ..ZenohAttributionSample::default()
+        },
+    );
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn wildcard_source_filter() -> UUri {
+    UUri::try_from_parts("*", u32::MAX, u8::MAX, u16::MAX)
+        .expect("valid benchmark wildcard source filter")
+}
+
+#[cfg(feature = "payload-contract-benchmarks")]
+fn emit_zenoh_sample(
+    path: PayloadContractPath,
+    mode: DiagnosticMode,
+    contract: &PayloadContractCase,
+    sample: ZenohAttributionSample,
+) {
+    static EMITTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    let line = format!(
+        "P51_ZENOH_SAMPLE selector={}_{} fixture={} publish_attempts={} exact_deliveries={} wildcard_deliveries={} zenoh_prefiltered_count={} adapter_dropped_count={} listener_dispatched_count={} attachment_metadata_bytes={} metadata_copy_bytes={} payload_copy_bytes={} attachment_encode_allocations={} attachment_encode_bytes={} attachment_decode_allocations={} attachment_decode_bytes={} receive_drop_allocations={} receive_drop_bytes={}",
+        path.label(),
+        mode.group_suffix(),
+        contract.name(),
+        sample.publish_attempts,
+        sample.exact_deliveries,
+        sample.wildcard_deliveries,
+        sample.zenoh_prefiltered_count,
+        sample.adapter_dropped_count,
+        sample.listener_dispatched_count,
+        sample.attachment_metadata_bytes,
+        sample.metadata_copy_bytes,
+        sample.payload_copy_bytes,
+        sample.attachment_encode_allocations,
+        sample.attachment_encode_bytes,
+        sample.attachment_decode_allocations,
+        sample.attachment_decode_bytes,
+        sample.receive_drop_allocations,
+        sample.receive_drop_bytes
+    );
+    if EMITTED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("P51 Zenoh sample emission lock should not be poisoned")
+        .insert(line.clone())
+    {
+        eprintln!("{line}");
+    }
 }
 
 #[cfg(feature = "payload-contract-benchmarks")]
@@ -955,16 +1401,53 @@ fn bench_payload_contract_matrix(
                 PayloadContractPath::ProtobufOwned | PayloadContractPath::StableOwnedBytes => None,
             };
             let prebuilt_payload = prebuilt_owned_payload(path, contract);
+            let nonmatching_case = BenchCase {
+                authority: case.authority.clone(),
+                source: uri(
+                    &case.authority,
+                    0x4210,
+                    resource_id(0xA000, next_sequence()),
+                ),
+            };
+            let mut raw_delivery_receivers =
+                if diagnostic_mode == DiagnosticMode::ZcRxZenohDeliveryOnly {
+                    let raw_core = runtime.block_on(build_raw_selected_wire_core(&case.authority));
+                    let (exact_tx, exact_rx) = mpsc::unbounded_channel();
+                    let (wildcard_tx, wildcard_rx) = mpsc::unbounded_channel();
+                    runtime.block_on(register_raw_delivery_listener(
+                        &raw_core,
+                        &case.source,
+                        exact_tx,
+                    ));
+                    runtime.block_on(register_raw_delivery_listener(
+                        &raw_core,
+                        &wildcard_source_filter(),
+                        wildcard_tx,
+                    ));
+                    Some((raw_core, exact_rx, wildcard_rx))
+                } else {
+                    None
+                };
 
             group.bench_function(
                 benchmark_id(path, diagnostic_mode, contract, expected_len),
                 |b| {
                     b.iter(|| match diagnostic_mode {
-                        DiagnosticMode::MetadataOnly | DiagnosticMode::ZcFilterOnly => {
+                        DiagnosticMode::MetadataOnly => {
                             run_metadata_only(path, &case, contract);
+                        }
+                        DiagnosticMode::ZcFilterOnly
+                        | DiagnosticMode::ZcRxAdapterFilterDropOnly => {
+                            run_zc_adapter_filter_drop_only(path, &case, contract);
                         }
                         DiagnosticMode::CopyLedger | DiagnosticMode::ZcCopyLedger => {
                             run_copy_ledger(path, contract);
+                        }
+                        DiagnosticMode::ZcRxAttachmentDecodeOnly => {
+                            run_zc_attachment_decode_only(path, &case, contract);
+                        }
+                        DiagnosticMode::ZcRxListenerDispatchOnly => {
+                            run_zc_listener_dispatch_only(path, &case, contract);
                         }
                         DiagnosticMode::ZcValidationOnly => {
                             run_zc_validation_only(contract);
@@ -991,8 +1474,26 @@ fn bench_payload_contract_matrix(
                         | DiagnosticMode::ZcSendOnly
                         | DiagnosticMode::ZcRxOnly
                         | DiagnosticMode::ZcLoanProvenanceCheck
-                        | DiagnosticMode::ZcRxNoValidation => {
+                        | DiagnosticMode::ZcRxNoValidation
+                        | DiagnosticMode::ZcRxZenohDeliveryOnly => {
                             runtime.block_on(async {
+                                if diagnostic_mode == DiagnosticMode::ZcRxZenohDeliveryOnly {
+                                    let (_raw_core, exact_rx, wildcard_rx) = raw_delivery_receivers
+                                        .as_mut()
+                                        .expect("raw delivery receivers");
+                                    run_zc_rx_zenoh_delivery_only(
+                                        selected_transport
+                                            .as_ref()
+                                            .expect("selected-wire transport"),
+                                        &case,
+                                        &nonmatching_case,
+                                        contract,
+                                        exact_rx,
+                                        wildcard_rx,
+                                    )
+                                    .await;
+                                    return;
+                                }
                                 let id = next_uuid();
                                 match path {
                                     PayloadContractPath::ProtobufOwned
