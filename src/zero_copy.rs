@@ -22,9 +22,9 @@ use std::{
 use async_trait::async_trait;
 use tracing::{trace, warn};
 use up_rust::{
-    LoanedPayload, NativePrefixProtobufMetadataCodec, PayloadLoanProvenance, PreparedTxLoanSpec,
-    UCode, UEncodedLoanedRxFrame, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata,
-    UStatus, UTxBuffer, UUninitTxBuffer, UUri, UWire, UWireError, UWireTransport,
+    LoanedPayload, NativePrefixProtobufMetadataCodec, PayloadAlignment, PayloadLoanProvenance,
+    PreparedTxLoanSpec, UCode, UEncodedLoanedRxFrame, UEncodedRxFrame, UEncodedZeroCopyListener,
+    UFrameMetadata, UStatus, UTxBuffer, UUninitTxBuffer, UUri, UWire, UWireError, UWireTransport,
     UZeroCopyTransportCore, UZeroCopyUninitTransportCore,
 };
 use zenoh::{
@@ -500,7 +500,7 @@ fn reserve_tx_parts(
     transport: &ZenohWireMechanics,
     spec: &PreparedTxLoanSpec,
 ) -> Result<(String, ZBytes, zenoh::qos::Priority, ZenohTxPayload), UStatus> {
-    validate_alignment(spec.payload_alignment())?;
+    let payload_alignment = spec.payload_alignment_proof();
     if !spec.has_payload() && spec.payload_len() != 0 {
         return Err(UStatus::fail_with_code(
             UCode::InvalidArgument,
@@ -517,15 +517,16 @@ fn reserve_tx_parts(
             .priority()
             .unwrap_or(up_rust::UPriority::CS1),
     );
-    let payload = reserve_payload(transport, spec.payload_len(), spec.payload_alignment())?;
+    let payload = reserve_payload(transport, spec.payload_len(), payload_alignment)?;
     Ok((zenoh_key, attachment, priority, payload))
 }
 
 fn reserve_payload(
     transport: &ZenohWireMechanics,
     payload_len: usize,
-    alignment: usize,
+    alignment: PayloadAlignment,
 ) -> Result<ZenohTxPayload, UStatus> {
+    let alignment = alignment.as_usize();
     if payload_len == 0 {
         return Ok(ZenohTxPayload::Empty);
     }
@@ -561,16 +562,6 @@ fn reserve_payload(
         ));
     }
     Ok(ZenohTxPayload::Shm(payload))
-}
-
-fn validate_alignment(alignment: usize) -> Result<(), UStatus> {
-    if alignment == 0 || !alignment.is_power_of_two() {
-        return Err(UStatus::fail_with_code(
-            UCode::InvalidArgument,
-            "payload alignment must be a non-zero power of two",
-        ));
-    }
-    Ok(())
 }
 
 fn align_len(payload_len: usize, alignment: usize) -> Result<usize, UStatus> {
