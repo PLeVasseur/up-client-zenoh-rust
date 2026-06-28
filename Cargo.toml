@@ -67,7 +67,7 @@ rand = "0.8.5"
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "cff47fe9c82fe673af2cc7d75b4930185f30ae39", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-protobuf-metadata", "selected-wire-transport-adapter"] }
+up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "e556c6e1d28c6cb67ee2368f1bc810a640b67397", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-protobuf-metadata", "selected-wire-transport-adapter"] }
 zenoh = { version = "1.9.0", features = ["internal", "unstable"] }
 
 [dev-dependencies]
@@ -75,7 +75,7 @@ criterion = { version = "0.5.1", features = ["csv_output"] }
 serde_json = "1.0.145"
 serial_test = "3.2"
 test-case = { version = "3.3" }
-up-wire-xcdrv2 = { git = "ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "4c78c53741eb1863ae6d71876760d46ee37c3b94" }
+up-wire-xcdrv2 = { git = "ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "5602546961682f4ddbc001c6323ce77156ee2420" }
 
 [[test]]
 name = "zero_copy_transport"
