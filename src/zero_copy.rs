@@ -12,11 +12,12 @@
  ********************************************************************************/
 
 use std::{
+    borrow::Cow,
     hash::{Hash, Hasher},
     mem::MaybeUninit,
     num::NonZeroUsize,
     ops::Deref,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use async_trait::async_trait;
@@ -259,14 +260,16 @@ impl UUninitTxBuffer for ZenohUninitTxBuffer {
 }
 
 pub struct ZenohRxFrame {
-    encoded_metadata: Vec<u8>,
+    encoded_metadata: ZBytes,
+    encoded_metadata_fallback: OnceLock<Vec<u8>>,
     sample: Sample,
 }
 
 impl ZenohRxFrame {
-    fn new(encoded_metadata: Vec<u8>, sample: Sample) -> Self {
+    fn new(encoded_metadata: ZBytes, sample: Sample) -> Self {
         Self {
             encoded_metadata,
+            encoded_metadata_fallback: OnceLock::new(),
             sample,
         }
     }
@@ -288,7 +291,13 @@ impl UEncodedRxFrame for ZenohRxFrame {
         Self: 'a;
 
     fn encoded_metadata(&self) -> &[u8] {
-        &self.encoded_metadata
+        match self.encoded_metadata.to_bytes() {
+            Cow::Borrowed(bytes) => bytes,
+            Cow::Owned(bytes) => self
+                .encoded_metadata_fallback
+                .get_or_init(|| bytes)
+                .as_slice(),
+        }
     }
 
     fn payload_len(&self) -> usize {
@@ -396,7 +405,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                 continue;
             };
             ensure_strict_shm_payload(&sample)?;
-            return Ok(ZenohRxFrame::new(attachment.to_bytes().to_vec(), sample));
+            return Ok(ZenohRxFrame::new(attachment.clone(), sample));
         }
     }
 
@@ -432,7 +441,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                     warn!("Dropping non-SHM Zenoh zero-copy sample: {err:?}");
                     return;
                 }
-                let frame = ZenohRxFrame::new(attachment.to_bytes().to_vec(), sample);
+                let frame = ZenohRxFrame::new(attachment.clone(), sample);
                 let listener = callback_listener.clone();
                 tokio::spawn(async move {
                     listener.on_receive_encoded_zero_copy(frame).await;
