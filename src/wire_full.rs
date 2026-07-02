@@ -11,8 +11,8 @@ use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::{trace, warn};
 use up_rust::{
-    EncodedOwnedFrame, NativePrefixProtobufMetadataCodec, PreparedOwnedFrame, UCode,
-    UEncodedOwnedListener, UOwnedTransportCore, UStatus, UUri, UWire, UWireTransport,
+    EncodedOwnedFrame, PreparedOwnedFrame, UCode, UEncodedOwnedListener,
+    UNativePrefixWireTransport, UOwnedTransportCore, UStatus, UUri, UWire, UWithNativePrefixWire,
 };
 use zenoh::{bytes::ZBytes, sample::Sample};
 
@@ -48,14 +48,11 @@ impl ZenohOwnedCore {
 
     /// Wraps this core in the generic selected-wire adapter.
     #[must_use]
-    pub fn with_selected_wire<W>(
-        self,
-        wire: W,
-    ) -> UWireTransport<Self, W, NativePrefixProtobufMetadataCodec>
+    pub fn with_selected_wire<W>(self, wire: W) -> UNativePrefixWireTransport<Self, W>
     where
         W: UWire,
     {
-        UWireTransport::new(self, wire, NativePrefixProtobufMetadataCodec)
+        self.into_native_prefix_wire_transport(wire)
     }
 }
 

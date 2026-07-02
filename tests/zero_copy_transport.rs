@@ -652,6 +652,8 @@ struct PayloadSender<W> {
     _wire: PhantomData<W>,
 }
 
+type NativePrefixRx<W> = UWireRx<ZenohRxFrame, W, NativePrefixProtobufMetadataCodec>;
+
 impl<W> PayloadSender<W> {
     fn new(sender: mpsc::UnboundedSender<Vec<u8>>) -> Self {
         Self {
@@ -662,15 +664,11 @@ impl<W> PayloadSender<W> {
 }
 
 #[async_trait]
-impl<W> UZeroCopyListener<UWireRx<ZenohRxFrame, W, NativePrefixProtobufMetadataCodec>>
-    for PayloadSender<W>
+impl<W> UZeroCopyListener<NativePrefixRx<W>> for PayloadSender<W>
 where
     W: UWire + Send + Sync + 'static,
 {
-    async fn on_receive_zero_copy(
-        &self,
-        frame: UWireRx<ZenohRxFrame, W, NativePrefixProtobufMetadataCodec>,
-    ) {
+    async fn on_receive_zero_copy(&self, frame: NativePrefixRx<W>) {
         let mut payload = Vec::new();
         frame
             .payload_reader()

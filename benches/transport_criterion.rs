@@ -47,11 +47,11 @@ use up_rust::{
 };
 use up_rust::{
     try_project_umessage_to_frame_metadata, NativePrefixProtobufMetadataCodec,
-    StableContainerWireFormat, UCode, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata,
-    UFrameView, UMessage, UMessageBuilder, UMessageType, UOwnedFrame, UOwnedListener,
-    UOwnedTransport, UPayloadFormat, UStatus, UUri, UWire, UWireMetadataCodec, UWireRx,
-    UZeroCopyListener, UZeroCopyTransport, UZeroCopyTransportCore, UZeroCopyUninitTransportExt,
-    UUID,
+    StableContainerWireFormat, StableContainerWireTransport, UCode, UEncodedRxFrame,
+    UEncodedZeroCopyListener, UFrameMetadata, UFrameView, UMessage, UMessageBuilder, UMessageType,
+    UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UStatus, UUri, UWire,
+    UWireMetadataCodec, UWireRx, UZeroCopyListener, UZeroCopyTransport, UZeroCopyTransportCore,
+    UZeroCopyUninitTransportExt, UUID,
 };
 use up_transport_zenoh::{
     zenoh_config, UPTransportZenoh, ZenohOwnedCore, ZenohRxFrame, ZenohZeroCopyCore,
@@ -64,6 +64,14 @@ const ZENOH_SHM_SEGMENT_SIZE: usize = 64 * 1_024 * 1_024;
 const UUID_LSB_BASE: u64 = 0x8000_0000_0000_0000;
 #[cfg(feature = "payload-contract-benchmarks")]
 const PAYLOAD_CONTRACT_SEQUENCE: u32 = 1;
+
+type StableZenohOwnedTransport = StableContainerWireTransport<ZenohOwnedCore>;
+type StableZenohZeroCopyTransport = StableContainerWireTransport<ZenohZeroCopyCore>;
+type StableZenohRx =
+    UWireRx<ZenohRxFrame, StableContainerWireFormat, NativePrefixProtobufMetadataCodec>;
+#[cfg(feature = "payload-contract-benchmarks")]
+type StableBenchRx =
+    UWireRx<BenchEncodedRxFrame, StableContainerWireFormat, NativePrefixProtobufMetadataCodec>;
 
 struct CountingAllocator;
 
@@ -460,15 +468,8 @@ struct SelectedWireAckListener {
 
 #[cfg(feature = "payload-contract-benchmarks")]
 #[async_trait]
-impl
-    UZeroCopyListener<
-        UWireRx<ZenohRxFrame, StableContainerWireFormat, NativePrefixProtobufMetadataCodec>,
-    > for SelectedWireAckListener
-{
-    async fn on_receive_zero_copy(
-        &self,
-        frame: UWireRx<ZenohRxFrame, StableContainerWireFormat, NativePrefixProtobufMetadataCodec>,
-    ) {
+impl UZeroCopyListener<StableZenohRx> for SelectedWireAckListener {
+    async fn on_receive_zero_copy(&self, frame: StableZenohRx) {
         self.tx
             .send(selected_wire_ack(
                 &frame,
@@ -479,15 +480,7 @@ impl
     }
 }
 
-async fn build_owned_transport(
-    authority: &str,
-) -> Arc<
-    up_rust::UWireTransport<
-        ZenohOwnedCore,
-        StableContainerWireFormat,
-        NativePrefixProtobufMetadataCodec,
-    >,
-> {
+async fn build_owned_transport(authority: &str) -> Arc<StableZenohOwnedTransport> {
     let core = ZenohOwnedCore::new(
         zenoh_config::Config::default(),
         format!("//{authority}/4210/1/0"),
@@ -497,15 +490,7 @@ async fn build_owned_transport(
     Arc::new(core.with_selected_wire(StableContainerWireFormat))
 }
 
-async fn build_selected_wire_transport(
-    authority: &str,
-) -> Arc<
-    up_rust::UWireTransport<
-        ZenohZeroCopyCore,
-        StableContainerWireFormat,
-        NativePrefixProtobufMetadataCodec,
-    >,
-> {
+async fn build_selected_wire_transport(authority: &str) -> Arc<StableZenohZeroCopyTransport> {
     let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
         .with_config(zenoh_config::Config::default())
         .with_shm_segment_size(ZENOH_SHM_SEGMENT_SIZE)
@@ -544,13 +529,7 @@ async fn register_raw_delivery_listener(
 }
 
 async fn register_owned_listener(
-    transport: &Arc<
-        up_rust::UWireTransport<
-            ZenohOwnedCore,
-            StableContainerWireFormat,
-            NativePrefixProtobufMetadataCodec,
-        >,
-    >,
+    transport: &Arc<StableZenohOwnedTransport>,
     path: PayloadContractPath,
     case: &BenchCase,
     contract: &PayloadContractCase,
@@ -585,13 +564,7 @@ async fn register_owned_listener(
 }
 
 async fn register_selected_wire_listener(
-    transport: &Arc<
-        up_rust::UWireTransport<
-            ZenohZeroCopyCore,
-            StableContainerWireFormat,
-            NativePrefixProtobufMetadataCodec,
-        >,
-    >,
+    transport: &Arc<StableZenohZeroCopyTransport>,
     case: &BenchCase,
     contract: &PayloadContractCase,
     tx: mpsc::UnboundedSender<PayloadContractAck>,
@@ -612,13 +585,7 @@ async fn register_selected_wire_listener(
 }
 
 async fn send_owned(
-    transport: &Arc<
-        up_rust::UWireTransport<
-            ZenohOwnedCore,
-            StableContainerWireFormat,
-            NativePrefixProtobufMetadataCodec,
-        >,
-    >,
+    transport: &Arc<StableZenohOwnedTransport>,
     path: PayloadContractPath,
     case: &BenchCase,
     id: UUID,
@@ -701,13 +668,7 @@ fn prebuilt_owned_payload(
 
 #[cfg(feature = "payload-contract-benchmarks")]
 async fn send_owned_prebuilt(
-    transport: &Arc<
-        up_rust::UWireTransport<
-            ZenohOwnedCore,
-            StableContainerWireFormat,
-            NativePrefixProtobufMetadataCodec,
-        >,
-    >,
+    transport: &Arc<StableZenohOwnedTransport>,
     case: &BenchCase,
     id: UUID,
     payload: &PrebuiltOwnedPayload,
@@ -721,13 +682,7 @@ async fn send_owned_prebuilt(
 }
 
 async fn send_selected_wire(
-    transport: &Arc<
-        up_rust::UWireTransport<
-            ZenohZeroCopyCore,
-            StableContainerWireFormat,
-            NativePrefixProtobufMetadataCodec,
-        >,
-    >,
+    transport: &Arc<StableZenohZeroCopyTransport>,
     metadata: UFrameMetadata,
     contract: &PayloadContractCase,
 ) -> Result<(), UStatus> {
@@ -1151,12 +1106,8 @@ fn run_zc_adapter_filter_drop_only(
     };
     let raw = BenchEncodedRxFrame::new(encoded_metadata_for(&nonmatching_case, next_uuid()), 0);
     reset_allocations();
-    let frame = UWireRx::<
-        BenchEncodedRxFrame,
-        StableContainerWireFormat,
-        NativePrefixProtobufMetadataCodec,
-    >::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
-    .expect("benchmark encoded frame should decode");
+    let frame = StableBenchRx::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
+        .expect("benchmark encoded frame should decode");
     let matches = matching_case
         .source
         .matches(frame.metadata().attributes().source());
@@ -1183,12 +1134,8 @@ fn run_zc_listener_dispatch_only(
     contract: &PayloadContractCase,
 ) {
     let raw = BenchEncodedRxFrame::new(encoded_metadata_for(case, next_uuid()), 0);
-    let frame = UWireRx::<
-        BenchEncodedRxFrame,
-        StableContainerWireFormat,
-        NativePrefixProtobufMetadataCodec,
-    >::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
-    .expect("benchmark encoded frame should decode");
+    let frame = StableBenchRx::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
+        .expect("benchmark encoded frame should decode");
     let ack = PayloadContractAck {
         id: frame.metadata().attributes().id().clone(),
         message_type: frame.metadata().attributes().type_(),
@@ -1211,13 +1158,7 @@ fn run_zc_listener_dispatch_only(
 
 #[cfg(feature = "payload-contract-benchmarks")]
 async fn run_zc_rx_zenoh_delivery_only(
-    transport: &Arc<
-        up_rust::UWireTransport<
-            ZenohZeroCopyCore,
-            StableContainerWireFormat,
-            NativePrefixProtobufMetadataCodec,
-        >,
-    >,
+    transport: &Arc<StableZenohZeroCopyTransport>,
     exact_case: &BenchCase,
     nonmatching_case: &BenchCase,
     contract: &PayloadContractCase,

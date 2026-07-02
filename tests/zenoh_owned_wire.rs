@@ -36,7 +36,7 @@ fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMe
 
 async fn owned_transport<W>(
     authority: &str,
-) -> Arc<up_rust::UWireTransport<ZenohOwnedCore, W, NativePrefixProtobufMetadataCodec>>
+) -> Arc<up_rust::UNativePrefixWireTransport<ZenohOwnedCore, W>>
 where
     W: up_rust::UWire + Default,
 {

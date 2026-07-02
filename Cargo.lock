@@ -3595,7 +3595,7 @@ dependencies = [
 [[package]]
 name = "up-rust"
 version = "0.10.0-SNAPSHOT"
-source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=3d5ba3805792086e1ca59e75a826c6501bc8f779#3d5ba3805792086e1ca59e75a826c6501bc8f779"
+source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=98f62b4abefaa977ddfdcfcf8067b860f1303c64#98f62b4abefaa977ddfdcfcf8067b860f1303c64"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3619,7 +3619,7 @@ dependencies = [
 [[package]]
 name = "up-rust-macros"
 version = "0.10.0-SNAPSHOT"
-source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=3d5ba3805792086e1ca59e75a826c6501bc8f779#3d5ba3805792086e1ca59e75a826c6501bc8f779"
+source = "git+ssh://git@github.com/PLeVasseur/up-rust.git?rev=98f62b4abefaa977ddfdcfcf8067b860f1303c64#98f62b4abefaa977ddfdcfcf8067b860f1303c64"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3656,7 +3656,7 @@ dependencies = [
 [[package]]
 name = "up-wire-xcdrv2"
 version = "0.0.0"
-source = "git+ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=80d9697924c7a8bdc54f8947eac2d3ca3d473d8c#80d9697924c7a8bdc54f8947eac2d3ca3d473d8c"
+source = "git+ssh://git@github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=96ecbc86155c0f7ce0179b01d2c6b0225a0e21f3#96ecbc86155c0f7ce0179b01d2c6b0225a0e21f3"
 dependencies = [
  "up-rust",
 ]
