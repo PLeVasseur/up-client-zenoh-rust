@@ -10,10 +10,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serial_test::serial;
 use tokio::sync::mpsc;
+use up_rust::selected_wire_user_api::UNativePrefixWireTransport;
+use up_rust::wire_implementer_api::{
+    NativePrefixProtobufMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire, UWireMetadataCodec,
+};
 use up_rust::{
-    NativePrefixProtobufMetadataCodec, PayloadEncoding, PayloadFormat, ProtobufWire, UCode,
-    UFrameMetadata, UMessageBuilder, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat,
-    UProtocolNativeWire, UUri, UWire, UWireMetadataCodec,
+    PayloadEncoding, PayloadFormat, UCode, UFrameMetadata, UMessageBuilder, UOwnedFrame,
+    UOwnedListener, UOwnedTransport, UPayloadFormat, UUri,
 };
 use up_transport_zenoh::{zenoh_config, ZenohOwnedCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -34,11 +37,9 @@ fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMe
     UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
 }
 
-async fn owned_transport<W>(
-    authority: &str,
-) -> Arc<up_rust::UNativePrefixWireTransport<ZenohOwnedCore, W>>
+async fn owned_transport<W>(authority: &str) -> Arc<UNativePrefixWireTransport<ZenohOwnedCore, W>>
 where
-    W: up_rust::UWire + Default,
+    W: UWire + Default,
 {
     let core = ZenohOwnedCore::new(
         zenoh_config::Config::default(),

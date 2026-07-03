@@ -10,10 +10,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::{trace, warn};
-use up_rust::{
-    EncodedOwnedFrame, PreparedOwnedFrame, UCode, UEncodedOwnedListener,
-    UNativePrefixWireTransport, UOwnedTransportCore, UStatus, UUri, UWire, UWithNativePrefixWire,
+use up_rust::selected_wire_user_api::{UNativePrefixWireTransport, UWithNativePrefixWire};
+use up_rust::transport_implementer_api::{
+    EncodedOwnedFrame, PreparedOwnedFrame, UEncodedOwnedListener, UOwnedTransportCore,
 };
+use up_rust::wire_implementer_api::UWire;
+use up_rust::{UCode, UStatus, UUri};
 use zenoh::{bytes::ZBytes, sample::Sample};
 
 use crate::mechanics::ZenohWireMechanics;

@@ -18,13 +18,16 @@ use std::{io::Read, marker::PhantomData, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use serial_test::serial;
 use tokio::sync::mpsc;
+use up_rust::selected_wire_user_api::UWireRx;
+use up_rust::wire_implementer_api::{
+    NativePrefixProtobufMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire,
+    UWireMetadataCodec, WireIdentity, NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID,
+    NATIVE_PREFIX_METADATA_LAYOUT_ID, PROTOBUF_WIRE_ID,
+};
 use up_rust::{
-    NativePrefixProtobufMetadataCodec, PayloadEncoding, PayloadFormat, PayloadLoanProvenance,
-    ProtobufWire, UCode, UFrameMetadata, UFrameView, ULoanedContiguousZeroCopyRxFrame,
-    UMessageBuilder, UPayloadFormat, UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUninitTxBuffer,
-    UUri, UWire, UWireMetadataCodec, UWireRx, UZeroCopyListener, UZeroCopyTransport,
-    UZeroCopyUninitTransport, NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, NATIVE_PREFIX_METADATA_LAYOUT_ID,
-    PROTOBUF_WIRE_ID,
+    PayloadEncoding, PayloadFormat, PayloadLoanProvenance, UCode, UFrameMetadata, UFrameView,
+    ULoanedContiguousZeroCopyRxFrame, UMessageBuilder, UPayloadFormat, UTxBuffer, UTxLoanSpec,
+    UUninitTxBuffer, UUri, UZeroCopyListener, UZeroCopyTransport, UZeroCopyUninitTransport,
 };
 use up_transport_zenoh::{zenoh_config, ZenohRxFrame, ZenohZeroCopyCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -134,9 +137,9 @@ async fn publish_raw_zenoh(
 struct ProtobufWireWithNativePayloadFamily;
 
 impl UWire for ProtobufWireWithNativePayloadFamily {
-    const WIRE_ID: up_rust::WireIdentity = PROTOBUF_WIRE_ID;
-    const PAYLOAD_FAMILY_ID: up_rust::WireIdentity = NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID;
-    const METADATA_LAYOUT_ID: up_rust::WireIdentity = NATIVE_PREFIX_METADATA_LAYOUT_ID;
+    const WIRE_ID: WireIdentity = PROTOBUF_WIRE_ID;
+    const PAYLOAD_FAMILY_ID: WireIdentity = NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID;
+    const METADATA_LAYOUT_ID: WireIdentity = NATIVE_PREFIX_METADATA_LAYOUT_ID;
     const FORMAT_VERSION: u16 = ProtobufWire::FORMAT_VERSION;
 }
 

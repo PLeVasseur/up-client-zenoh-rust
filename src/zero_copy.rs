@@ -22,11 +22,15 @@ use std::{
 
 use async_trait::async_trait;
 use tracing::{trace, warn};
+use up_rust::selected_wire_user_api::{UNativePrefixWireTransport, UWithNativePrefixWire};
+use up_rust::transport_implementer_api::{
+    PreparedTxLoanSpec, UEncodedLoanedRxFrame, UEncodedRxFrame, UEncodedZeroCopyListener,
+    UZeroCopyTransportCore, UZeroCopyUninitTransportCore,
+};
+use up_rust::wire_implementer_api::UWire;
 use up_rust::{
-    LoanedPayload, PayloadAlignment, PayloadLoanProvenance, PreparedTxLoanSpec, UCode,
-    UEncodedLoanedRxFrame, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata,
-    UNativePrefixWireTransport, UStatus, UTxBuffer, UUninitTxBuffer, UUri, UWire, UWireError,
-    UWithNativePrefixWire, UZeroCopyTransportCore, UZeroCopyUninitTransportCore,
+    LoanedPayload, PayloadAlignment, PayloadLoanProvenance, UCode, UFrameMetadata, UStatus,
+    UTxBuffer, UUninitTxBuffer, UUri, UWireError,
 };
 use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
