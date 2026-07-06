@@ -20,14 +20,14 @@ use serial_test::serial;
 use tokio::sync::mpsc;
 use up_rust::selected_wire_user_api::UWireRx;
 use up_rust::wire_implementer_api::{
-    NativePrefixProtobufMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire,
-    UWireMetadataCodec, WireIdentity, NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID,
-    NATIVE_PREFIX_METADATA_LAYOUT_ID, PROTOBUF_WIRE_ID,
+    NativePrefixFrameMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire, UWireMetadataCodec,
+    WireIdentity, NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, PROTOBUF_WIRE_ID,
+    UFRAME_FIELDS_METADATA_LAYOUT_ID,
 };
 use up_rust::{
     PayloadEncoding, PayloadFormat, PayloadLoanProvenance, UCode, UFrameMetadata, UFrameView,
-    ULoanedContiguousZeroCopyRxFrame, UMessageBuilder, UPayloadFormat, UTxBuffer, UTxLoanSpec,
-    UUninitTxBuffer, UUri, UZeroCopyListener, UZeroCopyTransport, UZeroCopyUninitTransport,
+    ULoanedContiguousZeroCopyRxFrame, UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri,
+    UZeroCopyListener, UZeroCopyTransport, UZeroCopyUninitTransport,
 };
 use up_transport_zenoh::{zenoh_config, ZenohRxFrame, ZenohZeroCopyCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -52,8 +52,11 @@ fn sink(authority: &str, resource_id: u16) -> UUri {
 }
 
 fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMetadata {
-    let message = UMessageBuilder::publish(source).build().expect("message");
-    UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
+    let mut builder = UFrameMetadata::publish(source);
+    if let Some(payload_encoding) = payload_encoding {
+        builder = builder.with_payload_encoding(payload_encoding);
+    }
+    builder.build().expect("metadata")
 }
 
 fn notification_metadata(
@@ -61,10 +64,11 @@ fn notification_metadata(
     sink: UUri,
     payload_encoding: Option<PayloadEncoding>,
 ) -> UFrameMetadata {
-    let message = UMessageBuilder::notification(source, sink)
-        .build()
-        .expect("message");
-    UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
+    let mut builder = UFrameMetadata::notification(source, sink);
+    if let Some(payload_encoding) = payload_encoding {
+        builder = builder.with_payload_encoding(payload_encoding);
+    }
+    builder.build().expect("metadata")
 }
 
 async fn test_core(authority: &str) -> ZenohZeroCopyCore {
@@ -139,7 +143,7 @@ struct ProtobufWireWithNativePayloadFamily;
 impl UWire for ProtobufWireWithNativePayloadFamily {
     const WIRE_ID: WireIdentity = PROTOBUF_WIRE_ID;
     const PAYLOAD_FAMILY_ID: WireIdentity = NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID;
-    const METADATA_LAYOUT_ID: WireIdentity = NATIVE_PREFIX_METADATA_LAYOUT_ID;
+    const METADATA_LAYOUT_ID: WireIdentity = UFRAME_FIELDS_METADATA_LAYOUT_ID;
     const FORMAT_VERSION: u16 = ProtobufWire::FORMAT_VERSION;
 }
 
@@ -148,7 +152,7 @@ impl UWire for ProtobufWireWithNativePayloadFamily {
 async fn zenoh_zero_copy_loan_uses_shm_and_selected_wire_attachment() -> Result<(), TestError> {
     assert_zero_copy_prepared_metadata::<UProtocolNativeWire>(None, &[]).await?;
     assert_zero_copy_prepared_metadata::<ProtobufWire>(
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
+        Some(PayloadEncoding::PROTOBUF),
         b"0123456789abcdef",
     )
     .await?;
@@ -198,7 +202,7 @@ where
 
     let attachment = tx.attachment_bytes();
     assert_eq!(
-        NativePrefixProtobufMetadataCodec
+        NativePrefixFrameMetadataCodec
             .decode_frame_metadata(W::metadata_context(), &attachment)
             .expect("decode metadata"),
         metadata
@@ -219,10 +223,7 @@ async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> 
     allow_subscriber_matching().await;
 
     let payload = b"rx-shm";
-    let metadata = metadata(
-        source,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = metadata(source, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = transport
         .loan_tx(UTxLoanSpec::payload(metadata.clone(), payload.len(), 1)?)
         .await?;
@@ -270,10 +271,7 @@ async fn zero_copy_listener_fanout_delivers_rx_leases() -> Result<(), TestError>
     allow_subscriber_matching().await;
 
     let payload = b"fanout";
-    let second_metadata = metadata(
-        source,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let second_metadata = metadata(source, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = transport
         .loan_tx(UTxLoanSpec::payload(second_metadata, payload.len(), 1)?)
         .await?;
@@ -318,10 +316,7 @@ async fn zero_copy_unregister_listener_removes_exact_and_wildcard_listeners(
         .await?;
     allow_subscriber_matching().await;
     let payload = b"wildcard-only";
-    let first_metadata = metadata(
-        source.clone(),
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let first_metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
     let mut buffer = transport
         .loan_tx(UTxLoanSpec::payload(first_metadata, payload.len(), 1)?)
         .await?;
@@ -345,10 +340,7 @@ async fn zero_copy_unregister_listener_removes_exact_and_wildcard_listeners(
         .await?;
     allow_subscriber_matching().await;
     let payload = b"no-listeners";
-    let second_metadata = metadata(
-        source,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let second_metadata = metadata(source, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = transport
         .loan_tx(UTxLoanSpec::payload(second_metadata, payload.len(), 1)?)
         .await?;
@@ -376,10 +368,7 @@ async fn zero_copy_uninit_transmit_uses_selected_wire_metadata() -> Result<(), T
     allow_subscriber_matching().await;
 
     let payload = b"uninit";
-    let metadata = metadata(
-        source,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = metadata(source, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = transport
         .loan_uninit_tx(UTxLoanSpec::payload(metadata.clone(), payload.len(), 1)?)
         .await?;
@@ -414,10 +403,7 @@ async fn zero_copy_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_f
     allow_subscriber_matching().await;
 
     let payload = b"wrong";
-    let metadata = metadata(
-        source,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = metadata(source, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = sender
         .loan_tx(UTxLoanSpec::payload(metadata, payload.len(), 1)?)
         .await?;
@@ -444,10 +430,7 @@ async fn zero_copy_payload_family_mismatch_is_rejected_before_pull_receive_expos
     );
     let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9307);
-    let metadata = metadata(
-        source.clone(),
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
     let receive_source = source.clone();
     let receive_task =
         tokio::spawn(async move { receiver.receive_zero_copy(&receive_source, None).await });
@@ -475,11 +458,8 @@ async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame
     let authority = format!("zenoh-zcs-non-shm-{}", std::process::id());
     let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9308);
-    let metadata = metadata(
-        source.clone(),
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
-    let attachment = NativePrefixProtobufMetadataCodec
+    let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
+    let attachment = NativePrefixFrameMetadataCodec
         .encode_frame_metadata(ProtobufWire::metadata_context(), &metadata)?;
     let receive_source = source.clone();
     let receive_task =
@@ -519,10 +499,7 @@ async fn zero_copy_malformed_listener_metadata_is_not_delivered() -> Result<(), 
     allow_subscriber_matching().await;
 
     let payload = b"drop";
-    let metadata = metadata(
-        source,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = metadata(source, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = sender
         .loan_tx(UTxLoanSpec::payload(metadata, payload.len(), 1)?)
         .await?;
@@ -555,14 +532,11 @@ async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), Tes
         .await?;
     allow_subscriber_matching().await;
 
-    let metadata = metadata(
-        source.clone(),
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
     publish_raw_zenoh(
         &source,
         None,
-        NativePrefixProtobufMetadataCodec
+        NativePrefixFrameMetadataCodec
             .encode_frame_metadata(ProtobufWire::metadata_context(), &metadata)?,
         b"not-shm-listener",
     )
@@ -597,11 +571,7 @@ async fn zero_copy_sink_filter_mismatch_is_not_delivered_to_pull_receive() -> Re
     allow_subscriber_matching().await;
 
     let payload = b"sink-filter";
-    let metadata = notification_metadata(
-        source,
-        matching_sink,
-        Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-    );
+    let metadata = notification_metadata(source, matching_sink, Some(PayloadEncoding::PROTOBUF));
     let mut buffer = transport
         .loan_tx(UTxLoanSpec::payload(metadata, payload.len(), 1)?)
         .await?;
@@ -655,7 +625,7 @@ struct PayloadSender<W> {
     _wire: PhantomData<W>,
 }
 
-type NativePrefixRx<W> = UWireRx<ZenohRxFrame, W, NativePrefixProtobufMetadataCodec>;
+type NativePrefixRx<W> = UWireRx<ZenohRxFrame, W, NativePrefixFrameMetadataCodec>;
 
 impl<W> PayloadSender<W> {
     fn new(sender: mpsc::UnboundedSender<Vec<u8>>) -> Self {

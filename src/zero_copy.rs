@@ -518,13 +518,12 @@ fn reserve_tx_parts(
         ));
     }
     let metadata = spec.metadata();
-    let zenoh_key =
-        transport.to_zenoh_key_string(metadata.attributes().source(), metadata.attributes().sink());
+    let zenoh_key = transport.to_zenoh_key_string(metadata.source(), metadata.sink());
     let attachment = ZBytes::from(spec.encoded_metadata().to_vec());
     let priority = crate::mechanics::map_zenoh_priority(
         metadata
-            .attributes()
             .priority()
+            .map(up_rust::FramePriority::to_legacy_priority)
             .unwrap_or(up_rust::UPriority::CS1),
     );
     let payload = reserve_payload(transport, spec.payload_len(), payload_alignment)?;

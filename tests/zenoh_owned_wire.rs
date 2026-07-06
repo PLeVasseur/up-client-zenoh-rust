@@ -12,11 +12,11 @@ use serial_test::serial;
 use tokio::sync::mpsc;
 use up_rust::selected_wire_user_api::UNativePrefixWireTransport;
 use up_rust::wire_implementer_api::{
-    NativePrefixProtobufMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire, UWireMetadataCodec,
+    NativePrefixFrameMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire, UWireMetadataCodec,
 };
 use up_rust::{
-    PayloadEncoding, PayloadFormat, UCode, UFrameMetadata, UMessageBuilder, UOwnedFrame,
-    UOwnedListener, UOwnedTransport, UPayloadFormat, UUri,
+    PayloadEncoding, PayloadFormat, UCode, UFrameMetadata, UOwnedFrame, UOwnedListener,
+    UOwnedTransport, UUri,
 };
 use up_transport_zenoh::{zenoh_config, ZenohOwnedCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -33,8 +33,11 @@ fn source_wildcard(authority: &str) -> UUri {
 }
 
 fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMetadata {
-    let message = UMessageBuilder::publish(source).build().expect("message");
-    UFrameMetadata::new(message.attributes().clone(), payload_encoding).expect("metadata")
+    let mut builder = UFrameMetadata::publish(source);
+    if let Some(payload_encoding) = payload_encoding {
+        builder = builder.with_payload_encoding(payload_encoding);
+    }
+    builder.build().expect("metadata")
 }
 
 async fn owned_transport<W>(authority: &str) -> Arc<UNativePrefixWireTransport<ZenohOwnedCore, W>>
@@ -128,7 +131,7 @@ async fn owned_core_round_trips_protobuf_and_external_xcdrv2() -> Result<(), Tes
     let prefix = format!("zenoh-owned-rt-{}", std::process::id());
     assert_owned_round_trip::<ProtobufWire>(
         &format!("{prefix}-protobuf"),
-        PayloadEncoding::Standard(UPayloadFormat::Protobuf),
+        PayloadEncoding::PROTOBUF,
         Bytes::from_static(b"data"),
     )
     .await?;
@@ -154,12 +157,9 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() -> Re
         tokio::spawn(async move { receiver.receive_owned(&receive_source, None).await });
     allow_subscriber_matching().await;
 
-    let wrong_metadata = NativePrefixProtobufMetadataCodec.encode_frame_metadata(
+    let wrong_metadata = NativePrefixFrameMetadataCodec.encode_frame_metadata(
         ProtobufWire::metadata_context(),
-        &metadata(
-            source.clone(),
-            Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-        ),
+        &metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
     )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
 
@@ -180,12 +180,9 @@ async fn owned_core_malformed_listener_metadata_is_not_delivered() -> Result<(),
         .await?;
     allow_subscriber_matching().await;
 
-    let wrong_metadata = NativePrefixProtobufMetadataCodec.encode_frame_metadata(
+    let wrong_metadata = NativePrefixFrameMetadataCodec.encode_frame_metadata(
         ProtobufWire::metadata_context(),
-        &metadata(
-            source.clone(),
-            Some(PayloadEncoding::Standard(UPayloadFormat::Protobuf)),
-        ),
+        &metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
     )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
 

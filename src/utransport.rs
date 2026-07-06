@@ -24,9 +24,9 @@ use tokio::{
 };
 use tracing::{error, warn};
 use up_rust::{
-    try_project_frame_to_umessage, ComparableListener, PayloadEncoding, UAttributes,
-    UAttributesValidators, UCode, UFrameMetadata, UListener, UMessage, UMessageType,
-    UPayloadFormat, UStatus, UTransport, UUri,
+    try_project_attributes_to_frame_metadata, try_project_frame_to_umessage, ComparableListener,
+    PayloadEncoding, UAttributes, UAttributesValidators, UCode, UFrameMetadata, UListener,
+    UMessage, UMessageType, UPayloadFormat, UStatus, UTransport, UUri,
 };
 use zenoh::{
     key_expr::keyexpr,
@@ -68,9 +68,14 @@ fn message_from_parts(
     payload: Option<Bytes>,
 ) -> Result<UMessage, UStatus> {
     let payload_encoding = match (payload.as_ref(), attributes.payload_format()) {
-        (Some(_), Some(format)) if format != UPayloadFormat::Unspecified => {
-            Some(PayloadEncoding::Standard(format))
-        }
+        (Some(_), Some(format)) if format != UPayloadFormat::Unspecified => Some(
+            PayloadEncoding::try_from_legacy_format(format).map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::InvalidArgument,
+                    format!("Zenoh sample payload_format is not a concrete encoding: {err}"),
+                )
+            })?,
+        ),
         (None, _) => None,
         _ => {
             return Err(UStatus::fail_with_code(
@@ -79,12 +84,13 @@ fn message_from_parts(
             ));
         }
     };
-    let metadata = UFrameMetadata::new(attributes.clone(), payload_encoding).map_err(|err| {
-        UStatus::fail_with_code(
-            UCode::InvalidArgument,
-            format!("Unable to create UFrameMetadata from Zenoh sample: {err}"),
-        )
-    })?;
+    let metadata = try_project_attributes_to_frame_metadata(&attributes.clone(), payload_encoding)
+        .map_err(|err| {
+            UStatus::fail_with_code(
+                UCode::InvalidArgument,
+                format!("Unable to create UFrameMetadata from Zenoh sample: {err}"),
+            )
+        })?;
     try_project_frame_to_umessage(metadata, payload).map_err(|err| {
         UStatus::fail_with_code(
             UCode::InvalidArgument,

@@ -46,7 +46,7 @@ use up_rust::{
     PayloadEncoding, ULoanedContiguousZeroCopyRxFrame,
 };
 use up_rust::{
-    try_project_umessage_to_frame_metadata, NativePrefixProtobufMetadataCodec,
+    try_project_umessage_to_frame_metadata, NativePrefixFrameMetadataCodec,
     StableContainerWireFormat, StableContainerWireTransport, UCode, UEncodedRxFrame,
     UEncodedZeroCopyListener, UFrameMetadata, UFrameView, UMessage, UMessageBuilder, UMessageType,
     UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UStatus, UUri, UWire,
@@ -68,10 +68,10 @@ const PAYLOAD_CONTRACT_SEQUENCE: u32 = 1;
 type StableZenohOwnedTransport = StableContainerWireTransport<ZenohOwnedCore>;
 type StableZenohZeroCopyTransport = StableContainerWireTransport<ZenohZeroCopyCore>;
 type StableZenohRx =
-    UWireRx<ZenohRxFrame, StableContainerWireFormat, NativePrefixProtobufMetadataCodec>;
+    UWireRx<ZenohRxFrame, StableContainerWireFormat, NativePrefixFrameMetadataCodec>;
 #[cfg(feature = "payload-contract-benchmarks")]
 type StableBenchRx =
-    UWireRx<BenchEncodedRxFrame, StableContainerWireFormat, NativePrefixProtobufMetadataCodec>;
+    UWireRx<BenchEncodedRxFrame, StableContainerWireFormat, NativePrefixFrameMetadataCodec>;
 
 struct CountingAllocator;
 
@@ -306,11 +306,10 @@ impl BenchCase {
     }
 
     fn metadata(&self, id: UUID) -> UFrameMetadata {
-        let message = self
-            .message_builder(id)
+        UFrameMetadata::publish(self.source.clone())
+            .with_id(id)
             .build()
-            .expect("valid benchmark metadata message");
-        UFrameMetadata::new(message.attributes().clone(), None).expect("valid benchmark metadata")
+            .expect("valid benchmark metadata")
     }
 
     fn message(
@@ -399,7 +398,7 @@ struct RawDeliveryListener {
 #[async_trait]
 impl UEncodedZeroCopyListener<ZenohRxFrame> for RawDeliveryListener {
     async fn on_receive_encoded_zero_copy(&self, frame: ZenohRxFrame) {
-        let decoded = NativePrefixProtobufMetadataCodec
+        let decoded = NativePrefixFrameMetadataCodec
             .decode_frame_metadata(
                 StableContainerWireFormat::metadata_context(),
                 frame.encoded_metadata(),
@@ -407,7 +406,7 @@ impl UEncodedZeroCopyListener<ZenohRxFrame> for RawDeliveryListener {
             .expect("raw Zenoh delivery metadata should decode");
         self.tx
             .send(RawDeliveryAck {
-                id: decoded.attributes().id().clone(),
+                id: decoded.id().clone(),
                 payload_len: frame.payload_len(),
             })
             .expect("raw Zenoh delivery channel should remain open");
@@ -822,8 +821,8 @@ fn owned_ack(
         }
     }
     PayloadContractAck {
-        id: frame.metadata().attributes().id().clone(),
-        message_type: frame.metadata().attributes().type_(),
+        id: frame.metadata().id().clone(),
+        message_type: frame.metadata().kind().to_legacy_type(),
         case_id: contract.case_id(),
         sequence: PAYLOAD_CONTRACT_SEQUENCE,
         semantic_reference_len: contract.semantic_reference_len(),
@@ -845,8 +844,8 @@ fn selected_wire_ack(
         validate_stable_payload_for_case(frame, contract);
     }
     PayloadContractAck {
-        id: frame.metadata().attributes().id().clone(),
-        message_type: frame.metadata().attributes().type_(),
+        id: frame.metadata().id().clone(),
+        message_type: frame.metadata().kind().to_legacy_type(),
         case_id: contract.case_id(),
         sequence: PAYLOAD_CONTRACT_SEQUENCE,
         semantic_reference_len: contract.semantic_reference_len(),
@@ -1001,10 +1000,10 @@ fn run_zc_payload_init_only(contract: &PayloadContractCase) {
 fn run_metadata_only(path: PayloadContractPath, case: &BenchCase, contract: &PayloadContractCase) {
     let id = next_uuid();
     let metadata = case.metadata(id);
-    let encoded = NativePrefixProtobufMetadataCodec
+    let encoded = NativePrefixFrameMetadataCodec
         .encode_frame_metadata(StableContainerWireFormat::metadata_context(), &metadata)
         .expect("selected-wire metadata should encode");
-    let decoded = NativePrefixProtobufMetadataCodec
+    let decoded = NativePrefixFrameMetadataCodec
         .decode_frame_metadata(StableContainerWireFormat::metadata_context(), &encoded)
         .expect("selected-wire metadata should decode");
     black_box(decoded);
@@ -1017,7 +1016,7 @@ fn run_metadata_only(path: PayloadContractPath, case: &BenchCase, contract: &Pay
 fn run_copy_ledger(path: PayloadContractPath, contract: &PayloadContractCase) {
     let metadata = BenchCase::new(contract.name()).metadata(next_uuid());
     reset_allocations();
-    let encoded = NativePrefixProtobufMetadataCodec
+    let encoded = NativePrefixFrameMetadataCodec
         .encode_frame_metadata(StableContainerWireFormat::metadata_context(), &metadata)
         .expect("selected-wire metadata should encode");
     let encode_allocations = allocation_sample();
@@ -1057,7 +1056,7 @@ fn run_copy_ledger(path: PayloadContractPath, contract: &PayloadContractCase) {
 
 #[cfg(feature = "payload-contract-benchmarks")]
 fn encoded_metadata_for(case: &BenchCase, id: UUID) -> Vec<u8> {
-    NativePrefixProtobufMetadataCodec
+    NativePrefixFrameMetadataCodec
         .encode_frame_metadata(
             StableContainerWireFormat::metadata_context(),
             &case.metadata(id),
@@ -1106,11 +1105,9 @@ fn run_zc_adapter_filter_drop_only(
     };
     let raw = BenchEncodedRxFrame::new(encoded_metadata_for(&nonmatching_case, next_uuid()), 0);
     reset_allocations();
-    let frame = StableBenchRx::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
+    let frame = StableBenchRx::try_from_encoded(raw, &NativePrefixFrameMetadataCodec)
         .expect("benchmark encoded frame should decode");
-    let matches = matching_case
-        .source
-        .matches(frame.metadata().attributes().source());
+    let matches = matching_case.source.matches(frame.metadata().source());
     let sample = allocation_sample();
     assert!(!matches, "nonmatching frame should be adapter-dropped");
     emit_zenoh_sample(
@@ -1134,11 +1131,11 @@ fn run_zc_listener_dispatch_only(
     contract: &PayloadContractCase,
 ) {
     let raw = BenchEncodedRxFrame::new(encoded_metadata_for(case, next_uuid()), 0);
-    let frame = StableBenchRx::try_from_encoded(raw, &NativePrefixProtobufMetadataCodec)
+    let frame = StableBenchRx::try_from_encoded(raw, &NativePrefixFrameMetadataCodec)
         .expect("benchmark encoded frame should decode");
     let ack = PayloadContractAck {
-        id: frame.metadata().attributes().id().clone(),
-        message_type: frame.metadata().attributes().type_(),
+        id: frame.metadata().id().clone(),
+        message_type: frame.metadata().kind().to_legacy_type(),
         case_id: contract.case_id(),
         sequence: PAYLOAD_CONTRACT_SEQUENCE,
         semantic_reference_len: contract.semantic_reference_len(),
