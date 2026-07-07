@@ -67,7 +67,7 @@ rand = "0.8.5"
 tokio = { version = "1.45.1", default-features = false }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "45263b6f97857f29e2d61815643d67051171e98e", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-user-api", "transport-implementer-api", "wire-implementer-api"] }
+up-rust = { git = "ssh://git@github.com/PLeVasseur/up-rust.git", rev = "e60a43987ee23d3da7d6e75bd9c6f92264823cbd", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-user-api", "transport-implementer-api", "wire-implementer-api"] }
 zenoh = { version = "1.9.0", features = ["internal", "unstable"] }
 
 [dev-dependencies]
