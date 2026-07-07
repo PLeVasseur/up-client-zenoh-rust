@@ -4,7 +4,7 @@ Binding id: `zenoh.uframe.metadata-attachment.v1`
 
 ## Physical Placement
 
-Selected-wire UFrame metadata is carried in the Zenoh attachment bytes. The attachment contains the up-rust native-prefix metadata envelope: magic/version, selected-wire identity, payload-family identity, metadata-layout identity, and the selected metadata profile bytes.
+Selected-wire UFrame metadata is carried in the Zenoh attachment bytes. The attachment contains the UFrame metadata envelope (see up-spec `basics/uframe.adoc`, Metadata envelope and identity registry): magic/version, selected-wire identity, payload-family identity, metadata-layout identity, and the selected metadata profile bytes.
 
 The Zenoh payload remains the application payload bytes for the selected wire. The metadata attachment is not part of the application payload.
 
