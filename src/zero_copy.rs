@@ -406,8 +406,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                 continue;
             };
             if let Err(err) = ensure_strict_shm_payload(&sample) {
-                warn!("Dropping non-SHM Zenoh zero-copy sample: {err:?}");
-                continue;
+                return Err(err);
             }
             return Ok(ZenohRxFrame::new(attachment.clone(), sample));
         }

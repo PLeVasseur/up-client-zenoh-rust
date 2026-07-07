@@ -129,6 +129,7 @@ async fn publish_raw_zenoh(
     payload: &[u8],
 ) -> Result<(), TestError> {
     let session = zenoh::open(zenoh_config::Config::default()).await?;
+    allow_subscriber_matching().await;
     session
         .put(zenoh_key(source, sink), ZBytes::from(payload.to_vec()))
         .attachment(ZBytes::from(attachment))
