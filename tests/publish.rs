@@ -20,20 +20,26 @@ use std::{
 use test_case::test_case;
 use tokio::time::{sleep, Duration};
 use up_rust::{
-    LocalUriProvider, UListener, UMessage, UMessageBuilder, UPayloadFormat, UTransport, UUri,
+    LocalUriProvider, PayloadEncoding, UListener, UMessage, UMessageBuilder, UPayloadFormat,
+    UTransport, UUri,
 };
 
 struct PublishNotificationListener {
     recv_data: Arc<Mutex<String>>,
+    recv_open_payload_encoding: Arc<Mutex<(Option<u32>, Option<String>, Option<String>)>>,
 }
 impl PublishNotificationListener {
     fn new() -> Self {
         PublishNotificationListener {
             recv_data: Arc::new(Mutex::new(String::new())),
+            recv_open_payload_encoding: Arc::new(Mutex::new((None, None, None))),
         }
     }
     fn get_recv_data(&self) -> String {
         self.recv_data.lock().unwrap().clone()
+    }
+    fn get_recv_open_payload_encoding(&self) -> (Option<u32>, Option<String>, Option<String>) {
+        self.recv_open_payload_encoding.lock().unwrap().clone()
     }
 }
 #[async_trait]
@@ -41,7 +47,13 @@ impl UListener for PublishNotificationListener {
     async fn on_receive(&self, msg: UMessage) {
         let data = msg.payload().expect("payload").to_vec();
         let value = data.into_iter().map(|c| c as char).collect::<String>();
+        let open_payload_encoding = msg.attributes().open_payload_encoding_parts();
         *self.recv_data.lock().unwrap() = value;
+        *self.recv_open_payload_encoding.lock().unwrap() = (
+            open_payload_encoding.0,
+            open_payload_encoding.1.map(ToOwned::to_owned),
+            open_payload_encoding.2.map(ToOwned::to_owned),
+        );
     }
 }
 
@@ -82,6 +94,52 @@ async fn test_publish_and_subscribe(src_uuri: &str, resource_id: u16, listen_uur
     assert_eq!(pub_listener.get_recv_data(), target_data);
 
     // Cleanup
+    uptransport_recv
+        .unregister_listener(&listen_uuri, None, pub_listener)
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_publish_open_payload_encoding_survives_attachment() {
+    test_lib::before_test();
+
+    let target_data = String::from("open payload");
+    let uptransport_send = test_lib::create_up_transport_zenoh("//open_publisher/1/1/0")
+        .await
+        .unwrap();
+    let uptransport_recv = test_lib::create_up_transport_zenoh("//open_subscriber/3/1/0")
+        .await
+        .unwrap();
+    let publish_uuri = uptransport_send.get_resource_uri(0x8002);
+    let listen_uuri = UUri::from_str("//open_publisher/1/1/8002").unwrap();
+    let payload_encoding =
+        PayloadEncoding::custom("up.xcdr-v2", "application/vnd.uprotocol.xcdr-v2").unwrap();
+
+    let pub_listener = Arc::new(PublishNotificationListener::new());
+    uptransport_recv
+        .register_listener(&listen_uuri, None, pub_listener.clone())
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(1000)).await;
+
+    let umessage = UMessageBuilder::publish(publish_uuri)
+        .build_with_payload_encoding(target_data.clone(), payload_encoding)
+        .unwrap();
+    uptransport_send.send(umessage).await.unwrap();
+
+    sleep(Duration::from_millis(1000)).await;
+
+    assert_eq!(pub_listener.get_recv_data(), target_data);
+    assert_eq!(
+        pub_listener.get_recv_open_payload_encoding(),
+        (
+            None,
+            Some("up.xcdr-v2".to_string()),
+            Some("application/vnd.uprotocol.xcdr-v2".to_string())
+        )
+    );
+
     uptransport_recv
         .unregister_listener(&listen_uuri, None, pub_listener)
         .await
