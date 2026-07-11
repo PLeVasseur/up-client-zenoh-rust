@@ -13,9 +13,8 @@
 use crate::{MessageFlag, UPTransportZenoh, CB_RUNTIME};
 use async_trait::async_trait;
 use bytes::Bytes;
-use lazy_static::lazy_static;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
 use tokio::{
@@ -34,9 +33,8 @@ use zenoh::{
     sample::Sample,
 };
 
-lazy_static! {
-    static ref TOKIO_RUNTIME: Mutex<Runtime> = Mutex::new(Runtime::new().unwrap());
-}
+static TOKIO_RUNTIME: LazyLock<Mutex<Runtime>> =
+    LazyLock::new(|| Mutex::new(Runtime::new().unwrap()));
 
 #[inline]
 fn invoke_block_callback(listener: &Arc<dyn UListener>, resp_msg: UMessage) {

@@ -405,9 +405,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                 );
                 continue;
             };
-            if let Err(err) = ensure_strict_shm_payload(&sample) {
-                return Err(err);
-            }
+            ensure_strict_shm_payload(&sample)?;
             return Ok(ZenohRxFrame::new(attachment.clone(), sample));
         }
     }
@@ -522,12 +520,10 @@ fn reserve_tx_parts(
     let metadata = spec.metadata();
     let zenoh_key = transport.to_zenoh_key_string(metadata.source(), metadata.sink());
     let attachment = ZBytes::from(spec.encoded_metadata().to_vec());
-    let priority = crate::mechanics::map_zenoh_priority(
-        metadata
-            .priority()
-            .map(up_rust::FramePriority::to_legacy_priority)
-            .unwrap_or(up_rust::UPriority::CS1),
-    );
+    let priority = crate::mechanics::map_zenoh_priority(metadata.priority().map_or(
+        up_rust::UPriority::CS1,
+        up_rust::FramePriority::to_legacy_priority,
+    ));
     let payload = reserve_payload(transport, spec.payload_len(), payload_alignment)?;
     Ok((zenoh_key, attachment, priority, payload))
 }
@@ -566,7 +562,7 @@ fn reserve_payload(
         })?;
     }
     let address = payload.as_ref().as_ptr() as usize;
-    if address % alignment != 0 {
+    if !address.is_multiple_of(alignment) {
         return Err(UStatus::fail_with_code(
             UCode::Internal,
             format!("Zenoh SHM payload address 0x{address:x} does not satisfy requested alignment {alignment}"),

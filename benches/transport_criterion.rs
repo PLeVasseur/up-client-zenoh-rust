@@ -24,6 +24,11 @@ use std::{
     time::Duration,
     time::SystemTime,
 };
+#[cfg(feature = "perf-diagnostics")]
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -36,6 +41,8 @@ use tokio::{runtime::Runtime, sync::mpsc, time::Instant};
 use up_rust::bench_fixtures::payload_contract::{
     CameraBayerRggb12pFrame8mpV1, LidarPointCloudHesaiAt128V1,
 };
+#[cfg(feature = "perf-diagnostics")]
+use up_rust::UninitStableSendPhases;
 #[cfg(feature = "payload-contract-benchmarks")]
 use up_rust::{
     bench_fixtures::payload_contract::{
@@ -64,6 +71,8 @@ const ZENOH_SHM_SEGMENT_SIZE: usize = 64 * 1_024 * 1_024;
 const UUID_LSB_BASE: u64 = 0x8000_0000_0000_0000;
 #[cfg(feature = "payload-contract-benchmarks")]
 const PAYLOAD_CONTRACT_SEQUENCE: u32 = 1;
+#[cfg(feature = "perf-diagnostics")]
+const R8_UP_RUST_HEAD: &str = "eef9c445e2bdddacd6999739c83c1cd7c79a041d";
 
 type StableZenohOwnedTransport = StableContainerWireTransport<ZenohOwnedCore>;
 type StableZenohZeroCopyTransport = StableContainerWireTransport<ZenohZeroCopyCore>;
@@ -479,6 +488,21 @@ impl UZeroCopyListener<StableZenohRx> for SelectedWireAckListener {
     }
 }
 
+#[cfg(feature = "perf-diagnostics")]
+struct PhaseTraceListener {
+    tx: mpsc::UnboundedSender<StableZenohRx>,
+}
+
+#[cfg(feature = "perf-diagnostics")]
+#[async_trait]
+impl UZeroCopyListener<StableZenohRx> for PhaseTraceListener {
+    async fn on_receive_zero_copy(&self, frame: StableZenohRx) {
+        self.tx
+            .send(frame)
+            .expect("phase trace receive channel should remain open");
+    }
+}
+
 async fn build_owned_transport(authority: &str) -> Arc<StableZenohOwnedTransport> {
     let core = ZenohOwnedCore::new(
         zenoh_config::Config::default(),
@@ -771,6 +795,259 @@ async fn send_selected_wire(
     }
 }
 
+#[cfg(feature = "perf-diagnostics")]
+async fn send_selected_wire_phased(
+    transport: &Arc<StableZenohZeroCopyTransport>,
+    metadata: UFrameMetadata,
+    contract: &PayloadContractCase,
+) -> Result<UninitStableSendPhases, UStatus> {
+    match contract.kind() {
+        PayloadContractCaseKind::CanClassicMax => {
+            transport
+                .send_uninit_stable_payload_phased::<CanClassicFrameV1>(metadata, |payload| {
+                    payload_contract::init_can_classic_max(
+                        payload.into_init(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                })
+                .await
+        }
+        PayloadContractCaseKind::CanFdMax => {
+            transport
+                .send_uninit_stable_payload_phased::<CanFdFrameV1>(metadata, |payload| {
+                    payload_contract::init_can_fd_max(
+                        payload.into_init(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                })
+                .await
+        }
+        PayloadContractCaseKind::SomeIpSingleMtu => {
+            transport
+                .send_uninit_stable_payload_phased::<SomeIpSignalBatchMtuV1>(metadata, |payload| {
+                    payload_contract::init_someip_single_mtu(
+                        payload.into_init(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                })
+                .await
+        }
+        PayloadContractCaseKind::Streamer4k => {
+            transport
+                .send_uninit_stable_payload_phased::<StreamChunk4kV1>(metadata, |payload| {
+                    payload_contract::init_streamer_4k(
+                        payload.into_init(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                })
+                .await
+        }
+        PayloadContractCaseKind::RadarArs548DetectionList => {
+            transport
+                .send_uninit_stable_payload_phased::<RadarDetectionListArs548V1>(
+                    metadata,
+                    |payload| {
+                        payload_contract::init_radar_ars548_detection_list(
+                            payload.into_init(),
+                            PAYLOAD_CONTRACT_SEQUENCE,
+                        )
+                    },
+                )
+                .await
+        }
+        PayloadContractCaseKind::Streamer64k => {
+            transport
+                .send_uninit_stable_payload_phased::<StreamChunk64kV1>(metadata, |payload| {
+                    payload_contract::init_streamer_64k(
+                        payload.into_init(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                })
+                .await
+        }
+        PayloadContractCaseKind::LidarHesaiAt128PointCloud => {
+            transport
+                .send_uninit_stable_payload_phased::<LidarPointCloudHesaiAt128V1>(
+                    metadata,
+                    |payload| {
+                        payload_contract::init_lidar_hesai_at128_point_cloud(
+                            payload.into_init(),
+                            PAYLOAD_CONTRACT_SEQUENCE,
+                        )
+                    },
+                )
+                .await
+        }
+        PayloadContractCaseKind::Camera8mpBayerRggb12p => {
+            transport
+                .send_uninit_stable_payload_phased::<CameraBayerRggb12pFrame8mpV1>(
+                    metadata,
+                    |payload| {
+                        payload_contract::init_camera_8mp_bayer_rggb12p(
+                            payload.into_init(),
+                            PAYLOAD_CONTRACT_SEQUENCE,
+                        )
+                    },
+                )
+                .await
+        }
+    }
+}
+
+#[cfg(feature = "perf-diagnostics")]
+type PhaseTraceContext<'a> = (
+    &'a Arc<StableZenohZeroCopyTransport>,
+    &'a mut mpsc::UnboundedReceiver<StableZenohRx>,
+    &'a BenchCase,
+    &'a PayloadContractCase,
+    &'a mut BufWriter<File>,
+);
+
+#[cfg(feature = "perf-diagnostics")]
+async fn phase_trace_sample(
+    context: PhaseTraceContext<'_>,
+    stage: &str,
+    run: usize,
+    iteration: usize,
+) {
+    let (transport, rx, case, contract, writer) = context;
+    let id = next_uuid();
+    let full_loop_start = Instant::now();
+    let phases = send_selected_wire_phased(transport, case.metadata(id.clone()), contract)
+        .await
+        .expect("phase trace selected-wire send should succeed");
+
+    let receive_start = Instant::now();
+    let frame = tokio::time::timeout(LARGE_SENSOR_BENCH_TIMEOUT, rx.recv())
+        .await
+        .expect("phase trace receive timed out")
+        .expect("phase trace receive channel should remain open");
+    let receive = receive_start.elapsed();
+
+    let validate_start = Instant::now();
+    assert_eq!(frame.metadata().id(), &id);
+    assert_eq!(
+        frame.metadata().kind().to_legacy_type(),
+        UMessageType::Publish
+    );
+    assert_eq!(
+        frame.payload_len(),
+        transported_len(PayloadContractPath::StableZcNoZero, contract)
+    );
+    black_box(
+        frame
+            .try_contiguous_payload()
+            .expect("phase trace payload should be contiguous"),
+    );
+    black_box(
+        frame
+            .payload_loan_provenance()
+            .expect("phase trace payload should retain loan provenance"),
+    );
+    validate_stable_payload_for_case(&frame, contract);
+    let validate = validate_start.elapsed();
+
+    let release_start = Instant::now();
+    drop(frame);
+    let release = release_start.elapsed();
+    let full_loop_total = full_loop_start.elapsed();
+
+    let row = serde_json::json!({
+        "record_type": "sample",
+        "transport": "zenoh",
+        "case": contract.name(),
+        "semantic_reference_len": contract.semantic_reference_len(),
+        "transported_payload_len": transported_len(PayloadContractPath::StableZcNoZero, contract),
+        "stage": stage,
+        "run": run,
+        "iteration": iteration,
+        "cold_first_sample": stage == "warmup" && iteration == 0,
+        "prepare_ns": phases.prepare.as_nanos(),
+        "loan_ns": phases.loan.as_nanos(),
+        "verify_ns": phases.verify.as_nanos(),
+        "initialize_ns": phases.initialize.as_nanos(),
+        "witness_ns": phases.witness.as_nanos(),
+        "commit_ns": phases.commit.as_nanos(),
+        "send_total_ns": phases.total.as_nanos(),
+        "send_residual_ns": phases.residual.as_nanos(),
+        "receive_ns": receive.as_nanos(),
+        "validate_ns": validate.as_nanos(),
+        "release_ns": release.as_nanos(),
+        "full_loop_total_ns": full_loop_total.as_nanos(),
+    });
+    serde_json::to_writer(&mut *writer, &row).expect("serialize phase trace row");
+    writer.write_all(b"\n").expect("write phase trace newline");
+}
+
+#[cfg(feature = "perf-diagnostics")]
+fn run_phase_trace() {
+    let output = std::env::var("TRANSPORT_BENCH_PHASE_TRACE_OUTPUT")
+        .expect("TRANSPORT_BENCH_PHASE_TRACE_OUTPUT is required for phase trace mode");
+    let file = File::create(output).expect("create phase trace output");
+    let mut writer = BufWriter::new(file);
+    let clock_overhead = UninitStableSendPhases::calibrate_clock_overhead(10_000);
+    let run = std::env::var("TRANSPORT_BENCH_PHASE_RUN_ID")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse::<usize>()
+        .expect("TRANSPORT_BENCH_PHASE_RUN_ID should be an unsigned integer");
+    let metadata = serde_json::json!({
+        "record_type": "metadata",
+        "transport": "zenoh",
+        "up_rust_head": R8_UP_RUST_HEAD,
+        "warmup_iterations": 16,
+        "measured_runs": 1,
+        "run_id": run,
+        "iterations_per_run": 64,
+        "clock_overhead_ns": clock_overhead.as_nanos(),
+        "shm_segment_size": ZENOH_SHM_SEGMENT_SIZE,
+        "sequence": PAYLOAD_CONTRACT_SEQUENCE,
+    });
+    serde_json::to_writer(&mut writer, &metadata).expect("serialize phase trace metadata");
+    writer
+        .write_all(b"\n")
+        .expect("write phase trace metadata newline");
+
+    let runtime = Runtime::new().expect("tokio runtime");
+    for contract in payload_contract::core_cases()
+        .iter()
+        .chain(payload_contract::large_sensor_cases())
+        .filter(|contract| case_filter_allows(contract))
+    {
+        let case = BenchCase::new(contract.name());
+        let transport = runtime.block_on(build_selected_wire_transport(&case.authority));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        runtime.block_on(async {
+            transport
+                .register_zero_copy_listener(
+                    &case.source,
+                    None,
+                    Arc::new(PhaseTraceListener { tx }),
+                )
+                .await
+                .expect("phase trace listener should register");
+            for iteration in 0..16 {
+                phase_trace_sample(
+                    (&transport, &mut rx, &case, contract, &mut writer),
+                    "warmup",
+                    0,
+                    iteration,
+                )
+                .await;
+            }
+            for iteration in 0..64 {
+                phase_trace_sample(
+                    (&transport, &mut rx, &case, contract, &mut writer),
+                    "measured",
+                    run,
+                    iteration,
+                )
+                .await;
+            }
+        });
+        writer.flush().expect("flush phase trace output");
+    }
+}
+
 async fn wait_for_ack(
     rx: &mut mpsc::UnboundedReceiver<PayloadContractAck>,
     expected_id: &UUID,
@@ -1052,7 +1329,7 @@ fn run_copy_ledger(path: PayloadContractPath, contract: &PayloadContractCase) {
         path,
         DiagnosticMode::ZcCopyLedger,
         contract,
-        ZenohAttributionSample {
+        &ZenohAttributionSample {
             attachment_metadata_bytes,
             metadata_copy_bytes: attachment_metadata_bytes * 2,
             payload_copy_bytes: payload_copied,
@@ -1094,7 +1371,7 @@ fn run_zc_attachment_decode_only(
         path,
         DiagnosticMode::ZcRxAttachmentDecodeOnly,
         contract,
-        ZenohAttributionSample {
+        &ZenohAttributionSample {
             attachment_metadata_bytes: encoded.len(),
             attachment_decode_allocations: sample.allocations,
             attachment_decode_bytes: sample.bytes,
@@ -1129,7 +1406,7 @@ fn run_zc_adapter_filter_drop_only(
         path,
         DiagnosticMode::ZcRxAdapterFilterDropOnly,
         contract,
-        ZenohAttributionSample {
+        &ZenohAttributionSample {
             adapter_dropped_count: 1,
             receive_drop_allocations: sample.allocations,
             receive_drop_bytes: sample.bytes,
@@ -1160,7 +1437,7 @@ fn run_zc_listener_dispatch_only(
         path,
         DiagnosticMode::ZcRxListenerDispatchOnly,
         contract,
-        ZenohAttributionSample {
+        &ZenohAttributionSample {
             listener_dispatched_count: 1,
             ..ZenohAttributionSample::default()
         },
@@ -1228,7 +1505,7 @@ async fn run_zc_rx_zenoh_delivery_only(
         PayloadContractPath::StableZcNoZero,
         DiagnosticMode::ZcRxZenohDeliveryOnly,
         contract,
-        ZenohAttributionSample {
+        &ZenohAttributionSample {
             publish_attempts: 2,
             exact_deliveries,
             wildcard_deliveries,
@@ -1249,7 +1526,7 @@ fn emit_zenoh_sample(
     path: PayloadContractPath,
     mode: DiagnosticMode,
     contract: &PayloadContractCase,
-    sample: ZenohAttributionSample,
+    sample: &ZenohAttributionSample,
 ) {
     static EMITTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -1508,6 +1785,15 @@ fn bench_payload_contract_matrix(
 
 fn bench_transport(c: &mut Criterion) {
     UPTransportZenoh::try_init_log_from_env();
+    if std::env::var_os("TRANSPORT_BENCH_PHASE_TRACE").is_some() {
+        #[cfg(feature = "perf-diagnostics")]
+        {
+            run_phase_trace();
+            return;
+        }
+        #[cfg(not(feature = "perf-diagnostics"))]
+        panic!("TRANSPORT_BENCH_PHASE_TRACE requires feature perf-diagnostics");
+    }
     match std::env::var("TRANSPORT_BENCH_SUITE")
         .unwrap_or_else(|_| "payload-contract".to_string())
         .as_str()
