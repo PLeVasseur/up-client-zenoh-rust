@@ -139,7 +139,7 @@ async fn test_rpc_server_client(
         .await
         .unwrap();
     // Need some time for queryable to run
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Send Request with ZenohRpcClient (L2 API)
     {
@@ -180,7 +180,7 @@ async fn test_rpc_server_client(
         uptransport_client.send(umessage).await.unwrap();
 
         // Waiting for the callback to process data
-        sleep(Duration::from_millis(2000)).await;
+        sleep(Duration::from_secs(2)).await;
 
         // Compare the result
         assert_eq!(response_listener.get_response_data(), response_data);

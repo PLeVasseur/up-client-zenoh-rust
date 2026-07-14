@@ -89,9 +89,8 @@ async fn allow_subscriber_matching() {
 }
 
 async fn assert_no_payload_received(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>, message: &str) {
-    match tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
-        Ok(Some(payload)) => panic!("{message}: received unexpected payload {payload:?}"),
-        Ok(None) | Err(_) => {}
+    if let Ok(Some(payload)) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+        panic!("{message}: received unexpected payload {payload:?}");
     }
 }
 

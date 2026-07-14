@@ -92,6 +92,6 @@ async fn main() {
         .unwrap();
 
     loop {
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_secs(1)).await;
     }
 }

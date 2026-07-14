@@ -85,7 +85,7 @@ async fn test_l2_rpc() {
         .await
         .unwrap();
     // Need some time for queryable to run
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Create L2 RPC client
     let rpc_client = Arc::new(ZenohRpcClient::new(uptransport_client.clone()));

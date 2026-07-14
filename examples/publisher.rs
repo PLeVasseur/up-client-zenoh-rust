@@ -37,7 +37,7 @@ async fn main() {
             .unwrap();
         println!("Publishing {data} from {uuri}...");
         publisher.send(umessage).await.unwrap();
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_secs(1)).await;
         cnt += 1;
     }
 }

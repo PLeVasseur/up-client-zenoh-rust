@@ -90,7 +90,7 @@ impl UListener for UStreamerListener {
             UMessageType::Publish => {
                 panic!("Wrong UMessageType!");
             }
-        };
+        }
     }
 }
 
@@ -176,7 +176,7 @@ async fn test_ustreamer() {
         .await
         .unwrap();
     // Need some time for queryable to run
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Send Notification (uclient => uStreamer)
     {
@@ -189,7 +189,7 @@ async fn test_ustreamer() {
         uclient.send(umessage).await.unwrap();
 
         // Waiting for the subscriber to receive data
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_secs(1)).await;
 
         // Compare the result
         assert_eq!(ustreamer_listener.get_recv_notification_data(), target_data);
@@ -214,7 +214,7 @@ async fn test_ustreamer() {
         uclient.send(umessage).await.unwrap();
 
         // Waiting for the callback to process data
-        sleep(Duration::from_millis(2000)).await;
+        sleep(Duration::from_secs(2)).await;
 
         // Compare the result
         assert_eq!(
@@ -243,7 +243,7 @@ async fn test_ustreamer() {
             .unwrap();
 
         // Waiting for the callback to be ready
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_secs(1)).await;
 
         // Send Request (uStreamer => uclient)
         let umessage = UMessageBuilder::request(sink_uuri.clone(), src_uuri.clone(), 1000)
@@ -252,7 +252,7 @@ async fn test_ustreamer() {
         ustreamer.send(umessage).await.unwrap();
 
         // Waiting for the callback to process data
-        sleep(Duration::from_millis(2000)).await;
+        sleep(Duration::from_secs(2)).await;
 
         // Compare the result
         assert_eq!(

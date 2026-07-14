@@ -24,9 +24,11 @@ use up_rust::{
     UTransport, UUri,
 };
 
+type OpenPayloadEncoding = (Option<u32>, Option<String>, Option<String>);
+
 struct PublishNotificationListener {
     recv_data: Arc<Mutex<String>>,
-    recv_open_payload_encoding: Arc<Mutex<(Option<u32>, Option<String>, Option<String>)>>,
+    recv_open_payload_encoding: Arc<Mutex<OpenPayloadEncoding>>,
 }
 impl PublishNotificationListener {
     fn new() -> Self {
@@ -38,7 +40,7 @@ impl PublishNotificationListener {
     fn get_recv_data(&self) -> String {
         self.recv_data.lock().unwrap().clone()
     }
-    fn get_recv_open_payload_encoding(&self) -> (Option<u32>, Option<String>, Option<String>) {
+    fn get_recv_open_payload_encoding(&self) -> OpenPayloadEncoding {
         self.recv_open_payload_encoding.lock().unwrap().clone()
     }
 }
@@ -79,7 +81,7 @@ async fn test_publish_and_subscribe(src_uuri: &str, resource_id: u16, listen_uur
         .await
         .unwrap();
     // Waiting for listener to take effect
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Send UMessage
     let umessage = UMessageBuilder::publish(publish_uuri)
@@ -88,7 +90,7 @@ async fn test_publish_and_subscribe(src_uuri: &str, resource_id: u16, listen_uur
     uptransport_send.send(umessage).await.unwrap();
 
     // Waiting for the subscriber to receive data
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Compare the result
     assert_eq!(pub_listener.get_recv_data(), target_data);
@@ -121,14 +123,14 @@ async fn test_publish_open_payload_encoding_survives_attachment() {
         .register_listener(&listen_uuri, None, pub_listener.clone())
         .await
         .unwrap();
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     let umessage = UMessageBuilder::publish(publish_uuri)
         .build_with_payload_encoding(target_data.clone(), payload_encoding)
         .unwrap();
     uptransport_send.send(umessage).await.unwrap();
 
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     assert_eq!(pub_listener.get_recv_data(), target_data);
     assert_eq!(
@@ -181,7 +183,7 @@ async fn test_notification_and_subscribe(
         .await
         .unwrap();
     // Waiting for listener to take effect
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Send UMessage
     let umessage = UMessageBuilder::notification(src_uuri, sink_uuri)
@@ -190,7 +192,7 @@ async fn test_notification_and_subscribe(
     uptransport_sender.send(umessage).await.unwrap();
 
     // Waiting for the subscriber to receive data
-    sleep(Duration::from_millis(1000)).await;
+    sleep(Duration::from_secs(1)).await;
 
     // Compare the result
     assert_eq!(notification_listener.get_recv_data(), target_data);
