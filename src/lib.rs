@@ -302,13 +302,12 @@ mod tests {
         if let Some(uri) = sink_uri {
             let dst = UUri::from_str(uri).unwrap();
             assert_eq!(
-                UPTransportZenoh::get_listener_message_type(&src, Some(&dst))
-                    .map_err(|e| e.get_code()),
+                UPTransportZenoh::get_listener_message_type(&src, Some(&dst)).map_err(|e| e.code()),
                 result
             );
         } else {
             assert_eq!(
-                UPTransportZenoh::get_listener_message_type(&src, None).map_err(|e| e.get_code()),
+                UPTransportZenoh::get_listener_message_type(&src, None).map_err(|e| e.code()),
                 result
             );
         }

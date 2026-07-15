@@ -22,10 +22,12 @@ use tokio::{
     task,
 };
 use tracing::{error, warn};
+use up_rust::frame::metadata::{
+    try_project_attributes_to_frame_metadata, try_project_frame_to_umessage,
+};
 use up_rust::{
-    try_project_attributes_to_frame_metadata, try_project_frame_to_umessage, ComparableListener,
-    UAttributes, UAttributesValidators, UCode, UListener, UMessage, UMessageType, UStatus,
-    UTransport, UUri,
+    ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage,
+    UMessageType, UStatus, UTransport, UUri,
 };
 use zenoh::{
     key_expr::keyexpr,

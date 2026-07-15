@@ -41,6 +41,7 @@ use tokio::{runtime::Runtime, sync::mpsc, time::Instant};
 use up_rust::bench_fixtures::payload_contract::{
     CameraBayerRggb12pFrame8mpV1, LidarPointCloudHesaiAt128V1,
 };
+use up_rust::frame::metadata::try_project_umessage_to_frame_metadata;
 #[cfg(feature = "perf-diagnostics")]
 use up_rust::UninitStableSendPhases;
 #[cfg(feature = "payload-contract-benchmarks")]
@@ -53,12 +54,11 @@ use up_rust::{
     PayloadEncoding, ULoanedContiguousZeroCopyRxFrame,
 };
 use up_rust::{
-    try_project_umessage_to_frame_metadata, NativePrefixFrameMetadataCodec,
-    StableContainerWireFormat, StableContainerWireTransport, UCode, UEncodedRxFrame,
-    UEncodedZeroCopyListener, UFrameMetadata, UFrameView, UMessage, UMessageBuilder, UMessageType,
-    UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat, UStatus, UUri, UWire,
-    UWireMetadataCodec, UWireRx, UZeroCopyListener, UZeroCopyTransport, UZeroCopyTransportCore,
-    UZeroCopyUninitTransportExt, UUID,
+    NativePrefixFrameMetadataCodec, StableContainerWireFormat, StableContainerWireTransport, UCode,
+    UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata, UFrameView, UMessage,
+    UMessageBuilder, UMessageType, UOwnedFrame, UOwnedListener, UOwnedTransport, UPayloadFormat,
+    UStatus, UUri, UWire, UWireMetadataCodec, UWireRx, UZeroCopyListener, UZeroCopyTransport,
+    UZeroCopyTransportCore, UZeroCopyUninitTransportExt, UUID,
 };
 use up_transport_zenoh::{
     zenoh_config, UPTransportZenoh, ZenohOwnedCore, ZenohRxFrame, ZenohZeroCopyCore,

@@ -164,7 +164,7 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() -> Re
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
 
     let error = receive_task.await?.expect_err("wrong metadata rejected");
-    assert_eq!(error.get_code(), UCode::InvalidArgument);
+    assert_eq!(error.code(), UCode::InvalidArgument);
     Ok(())
 }
 

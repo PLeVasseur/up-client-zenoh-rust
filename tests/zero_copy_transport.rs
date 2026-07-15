@@ -172,7 +172,7 @@ async fn zero_copy_builder_rejects_zero_shm_segment_size() -> Result<(), TestErr
     else {
         panic!("zero segment size should be rejected");
     };
-    assert_eq!(error.get_code(), UCode::InvalidArgument);
+    assert_eq!(error.code(), UCode::InvalidArgument);
     Ok(())
 }
 
@@ -412,9 +412,8 @@ async fn zero_copy_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_f
 
     let error = tokio::time::timeout(Duration::from_secs(5), receive_task)
         .await??
-        .err()
-        .expect("wrong metadata rejected");
-    assert_eq!(error.get_code(), UCode::InvalidArgument);
+        .expect_err("wrong metadata rejected");
+    assert_eq!(error.code(), UCode::InvalidArgument);
     Ok(())
 }
 
@@ -445,9 +444,8 @@ async fn zero_copy_payload_family_mismatch_is_rejected_before_pull_receive_expos
 
     let error = tokio::time::timeout(Duration::from_secs(5), receive_task)
         .await??
-        .err()
-        .expect("payload-family mismatch rejected");
-    assert_eq!(error.get_code(), UCode::InvalidArgument);
+        .expect_err("payload-family mismatch rejected");
+    assert_eq!(error.code(), UCode::InvalidArgument);
     Ok(())
 }
 
@@ -470,9 +468,8 @@ async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame
 
     let error = tokio::time::timeout(Duration::from_secs(5), receive_task)
         .await??
-        .err()
-        .expect("non-SHM payload rejected");
-    assert_eq!(error.get_code(), UCode::FailedPrecondition);
+        .expect_err("non-SHM payload rejected");
+    assert_eq!(error.code(), UCode::FailedPrecondition);
     Ok(())
 }
 
@@ -614,9 +611,8 @@ async fn zero_copy_external_xcdrv2_wrong_wire_metadata_is_rejected() -> Result<(
 
     let error = tokio::time::timeout(Duration::from_secs(5), receive_task)
         .await??
-        .err()
-        .expect("wrong metadata rejected");
-    assert_eq!(error.get_code(), UCode::InvalidArgument);
+        .expect_err("wrong metadata rejected");
+    assert_eq!(error.code(), UCode::InvalidArgument);
     Ok(())
 }
 
