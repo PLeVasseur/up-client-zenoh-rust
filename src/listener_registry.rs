@@ -13,18 +13,16 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use protobuf::Message;
+use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::{debug, enabled, info, warn, Level};
-use up_rust::{
-    ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage, UStatus,
-};
+use up_rust::{ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UStatus};
 use zenoh::{bytes::ZBytes, pubsub::Subscriber, sample::Sample, Session};
 
 fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes> {
     if attachment.len() < 2 {
         return Err(UStatus::fail_with_code(
-            UCode::INVALID_ARGUMENT,
+            UCode::InvalidArgument,
             "message has no/invalid attachment",
         )
         .into());
@@ -39,12 +37,11 @@ fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes>
             ver
         );
         info!("{msg}");
-        return Err(UStatus::fail_with_code(UCode::INVALID_ARGUMENT, msg).into());
+        return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
     }
-    // Get the attributes
-    let uattributes = UAttributes::parse_from_bytes(&attachment_bytes[1..])?;
+    let uattributes = crate::UPTransportZenoh::attachment_to_uattributes(attachment)?;
     // [impl->dsn~utransport-registerlistener-discard-invalid-messages~1]
-    let validator = UAttributesValidators::get_validator_for_attributes(&uattributes);
+    let validator = UAttributesValidators::validator_for_attributes(&uattributes);
     Ok(validator.validate(&uattributes).map(|()| uattributes)?)
 }
 
@@ -90,7 +87,7 @@ impl ListenerRegistry {
         // [impl->dsn~utransport-registerlistener-error-resource-exhausted~1]
         if locked_subscribers.len() >= self.max_subscribers {
             return Err(UStatus::fail_with_code(
-                UCode::RESOURCE_EXHAUSTED,
+                UCode::ResourceExhausted,
                 format!(
                     "Maximum number of listeners reached: {}",
                     self.max_subscribers
@@ -123,10 +120,14 @@ impl ListenerRegistry {
             // [impl->dsn~up-attributes-ttl-timeout~1]
             if attributes.check_expired().is_ok() {
                 // Create UMessage
-                let msg = UMessage {
-                    attributes: Some(attributes).into(),
-                    payload: Some(sample.payload().to_bytes().to_vec().into()),
-                    ..Default::default()
+                let Ok(msg) = crate::utransport::message_from_parts(
+                    &attributes,
+                    attributes
+                        .payload_encoding()
+                        .map(|_| Bytes::copy_from_slice(sample.payload().to_bytes().as_ref())),
+                ) else {
+                    warn!("Unable to create UMessage from Zenoh sample");
+                    return;
                 };
                 // Note that we are invoking the listener in a dedicated task
                 // to avoid blocking the Zenoh callback thread
@@ -141,13 +142,13 @@ impl ListenerRegistry {
                     listener_cloned.on_receive(msg).await;
                 });
             } else if enabled!(Level::DEBUG) {
-                if let Some(id) = attributes.id.as_ref() {
-                    if let (Some(ts), Some(ttl)) = (id.get_time(), attributes.ttl) {
-                        debug!(
-                            "discarding expired message [id: {}, created: {ts}, ttl: {ttl}]",
-                            id.to_hyphenated_string(),
-                        );
-                    }
+                let id = attributes.id();
+                if let Some(ttl) = attributes.ttl() {
+                    let ts = id.time();
+                    debug!(
+                        "discarding expired message [id: {}, created: {ts}, ttl: {ttl}]",
+                        id.to_hyphenated_string(),
+                    );
                 }
             }
         };
@@ -170,7 +171,7 @@ impl ListenerRegistry {
             Err(e) => {
                 let msg = "Failed to register listener";
                 warn!("{msg}: {e}");
-                Err(UStatus::fail_with_code(UCode::INTERNAL, msg))
+                Err(UStatus::fail_with_code(UCode::Internal, msg))
             }
         }
     }
@@ -193,7 +194,7 @@ impl ListenerRegistry {
         {
             // [impl->dsn~utransport-unregisterlistener-error-notfound~1]
             return Err(UStatus::fail_with_code(
-                UCode::NOT_FOUND,
+                UCode::NotFound,
                 format!("No such listener registered for key expression: {key_expr}"),
             ));
         }
@@ -205,7 +206,7 @@ impl ListenerRegistry {
 mod tests {
 
     use super::*;
-    use up_rust::{MockUListener, UMessageType, UUri, UUID};
+    use up_rust::{MockUListener, UMessageBuilder, UUri};
 
     #[tokio::test(flavor = "multi_thread")]
     // [utest->dsn~utransport-registerlistener-idempotent~1]
@@ -233,31 +234,21 @@ mod tests {
         }
     }
 
-    #[test_case::test_case(
-        UAttributes {
-            type_: UMessageType::UMESSAGE_TYPE_PUBLISH.into(),
-            id: Some(UUID::build()).into(),
-            source: Some(UUri::try_from_parts("source", 0xAA1, 0x01, 0x9000).expect("failed to create source")).into(),
-            ..Default::default()
-        } => true;
-        "valid PUBLISH attributes"
-    )]
-    #[test_case::test_case(
-        UAttributes {
-            type_: UMessageType::UMESSAGE_TYPE_PUBLISH.into(),
-            id: Some(UUID::build()).into(),
-            // source is missing
-            ..Default::default()
-        } => false;
-        "invalid PUBLISH attributes"
-    )]
-    #[tokio::test(flavor = "multi_thread")]
+    #[test]
     // [utest->dsn~utransport-registerlistener-discard-invalid-messages~1]
-    async fn test_attachment_to_uattributes_fails_for_invalid_attributes(
-        attribs: UAttributes,
-    ) -> bool {
-        let attachment = crate::utransport::uattributes_to_attachment(&attribs)
-            .expect("failed to create attachment from invalid UAttributes");
-        attachment_to_uattributes(&attachment).is_ok()
+    fn test_attachment_to_uattributes_accepts_valid_attributes() {
+        let attribs = UMessageBuilder::publish(
+            UUri::try_from_parts("source", 0xAA1, 0x01, 0x9000).expect("failed to create source"),
+        )
+        .build()
+        .expect("failed to create message")
+        .attributes()
+        .clone();
+        let attachment = crate::UPTransportZenoh::uattributes_to_attachment(&attribs)
+            .expect("failed to create attachment from UAttributes");
+        assert_eq!(
+            attachment_to_uattributes(&attachment).expect("failed to parse attachment"),
+            attribs
+        );
     }
 }

@@ -50,4 +50,13 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "there currently is no version of the rsa crate available that fixes this vulnerability" },
     { id = "RUSTSEC-2024-0436", reason = "there is no better alternative of the crate, and the codebase has been stable for a long time" },
     { id = "RUSTSEC-2025-0134", reason = "zenoh needs to remove its dependency on this crate; based on the RUSTSEC description, there should be no imminent risk involved in the short term" },
+    { id = "RUSTSEC-2026-0041", reason = "zenoh-transport 1.9.0 hard-pins lz4_flex 0.10; remove when Zenoh accepts lz4_flex 0.11.6 or later" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+    "https://github.com/PLeVasseur/up-rust.git",
+    "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git",
 ]

@@ -14,7 +14,16 @@
 [package]
 description = "Zenoh Rust Transport library implementation of the Eclipse uProtocol"
 edition = "2021"
-include = ["/src/*", "/examples/*", "/Cargo.toml", "/README.md", "/config/*"]
+include = [
+    "/benches/*",
+    "/docs/*",
+    "/src/*",
+    "/scripts/*",
+    "/examples/*",
+    "/Cargo.toml",
+    "/README.md",
+    "/config/*",
+]
 keywords = ["uProtocol", "SDK", "communication", "Zenoh"]
 license = "Apache-2.0"
 name = "up-transport-zenoh"
@@ -28,10 +37,31 @@ resolver = "2"
 all = "deny"
 pedantic = "deny"
 
+[features]
+default = []
+benchmark-owned = ["up-rust/owned-frame-transport"]
+payload-contract-benchmarks = ["up-rust/payload-contract-fixtures"]
+payload-contract-large-benchmarks = [
+    "payload-contract-benchmarks",
+    "up-rust/payload-contract-large-fixtures",
+]
+perf-diagnostics = [
+    "benchmark-owned",
+    "payload-contract-large-benchmarks",
+    "zero-copy",
+]
+zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
+
+[[bench]]
+name = "transport_criterion"
+harness = false
+required-features = ["zero-copy", "benchmark-owned", "payload-contract-benchmarks"]
+
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.91"
 bytes = "1.12.1"
+chrono = "0.4.45"
 # addresses https://rustsec.org/advisories/RUSTSEC-2026-0204
 crossbeam-epoch = "0.9.20"
 # do not use yanked version 0.1.5
@@ -47,20 +77,30 @@ stabby = { version = "72.1.2" }
 time = { version = "0.3.47" }
 tokio = { version = "1.53.1", default-features = false }
 tracing = "0.1.44"
-up-rust = { version = "0.9", default-features = false }
+tracing-subscriber = "0.3.23"
+up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "7a82babfa7f94aed5b7aac1ac81babff20747bf2", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-user-api", "transport-implementer-api", "wire-implementer-api", "zero-copy-transport"] }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
-zenoh = { version = "1.9.0" }
+zenoh = { version = "1.9.0", features = ["internal"] }
 
 [dev-dependencies]
-chrono = "0.4.45"
 clap = { version = "4.6.6", features = ["derive"] }
+criterion = { version = "0.5.1", features = ["csv_output"] }
 quinn-proto = { version = "0.11.15" }
 serde_json = "1.0.151"
 serial_test = { version = "3.5.0" }
 test-case = { version = "3.3" }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "signal"] }
 tracing-subscriber = "0.3.23"
-up-rust = { version = "0.9", features = ["communication", "test-util"] }
+up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "7a82babfa7f94aed5b7aac1ac81babff20747bf2", default-features = false, features = ["communication", "test-util"] }
+up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "84cab0922b6727960d51682a6b48583110bbde61" }
+
+[[test]]
+name = "zero_copy_transport"
+required-features = ["zero-copy"]
+
+[[test]]
+name = "zenoh_owned_wire"
+required-features = ["benchmark-owned"]
 
 [profile.release]
 opt-level = 3

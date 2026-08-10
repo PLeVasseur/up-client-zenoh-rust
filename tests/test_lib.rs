@@ -11,7 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 use std::sync::Once;
-use up_rust::{UCode, UStatus};
+use up_rust::UStatus;
 use up_transport_zenoh::UPTransportZenoh;
 
 static INIT: Once = Once::new();
@@ -26,11 +26,10 @@ pub async fn create_up_transport_zenoh(
     local_authority_name: &str,
     config: Option<zenoh::config::Config>,
 ) -> Result<UPTransportZenoh, UStatus> {
-    let builder = UPTransportZenoh::builder(local_authority_name).map_err(|e| {
-        UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid URI: {e}"))
-    })?;
-    builder
-        .with_config(config.unwrap_or_default())
-        .build()
-        .await
+    let local_uri = if local_authority_name.starts_with("//") {
+        local_authority_name.to_string()
+    } else {
+        format!("//{local_authority_name}/1/1/0")
+    };
+    UPTransportZenoh::new(config.unwrap_or_default(), local_uri).await
 }

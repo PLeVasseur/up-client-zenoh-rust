@@ -10,211 +10,66 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
-
-/*!
-This crate provides an implementation of the Eclipse Zenoh &trade; uProtocol Transport.
-The transport uses Zenoh's publish-subscribe mechanism to exchange messages. It is
-designed to be used in conjunction with the [up-rust](https://crates.io/crates/up_rust)
-crate, which provides the uProtocol message types and utilities.
-
-The transport is designed to run in the context of a [tokio `Runtime`] which
-needs to be configured outside of the transport according to the
-processing requirements of the use case at hand. The transport does
-not make any implicit assumptions about the number of threads available
-and does not spawn any threads itself.
-
-[tokio `Runtime`]: https://docs.rs/tokio/latest/tokio/runtime/index.html
-*/
-
 mod listener_registry;
-pub(crate) mod utransport;
+mod mechanics;
+pub mod rpc;
+pub mod uri_provider;
+pub mod utransport;
+#[cfg(feature = "benchmark-owned")]
+pub mod wire_full;
+#[cfg(feature = "zero-copy")]
+mod zero_copy;
 
-use std::sync::Arc;
+pub use rpc::ZenohRpcClient;
+#[cfg(feature = "benchmark-owned")]
+pub use wire_full::ZenohOwnedCore;
+#[cfg(feature = "zero-copy")]
+pub use zero_copy::{
+    ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer, ZenohZeroCopyCore, ZenohZeroCopyCoreBuilder,
+};
 
 use listener_registry::ListenerRegistry;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use tracing::error;
-use up_rust::{UCode, UStatus, UUri};
-use zenoh::{Config, Session};
+use up_rust::{ComparableListener, ProtobufMappable, UAttributes, UCode, UPriority, UStatus, UUri};
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
+use zenoh::{
+    bytes::ZBytes,
+    qos::Priority,
+    query::{Query, Queryable},
+    Session,
+};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
 
-/// An Eclipse Zenoh &trade; based uProtocol transport implementation.
-///
-/// The transport registers callbacks on the Zenoh runtime for listeners that
-/// are being registered using `up_rust::UTransport::register_listener`.
-///
-/// <div class="warning">
-///
-/// The registered listeners are being invoked sequentially on the **same thread**
-/// that the callback is being executed on. Implementers of listeners are therefore
-/// **strongly advised** to move non-trivial processing logic to **another/dedicated
-/// thread**, if necessary. Please refer to `subscriber` and `notification_receiver`
-/// in the examples directory for how this can be done.
-///
-/// </div>
+type QueryableMap = Arc<Mutex<HashMap<(String, ComparableListener), Queryable<()>>>>;
+type QueryMap = Arc<Mutex<HashMap<String, Query>>>;
 pub struct UPTransportZenoh {
     session: Arc<Session>,
     subscribers: ListenerRegistry,
-    local_authority: String,
+    // Able to unregister Queryable
+    queryable_map: QueryableMap,
+    // Save the reqid to be able to send back response
+    query_map: QueryMap,
+    // URI
+    uri: UUri,
 }
 
 impl UPTransportZenoh {
-    /// Gets a builder for creating a new Zenoh transport.
+    /// Create `UPTransportZenoh` by applying the Zenoh configuration, local `UUri`.
     ///
     /// # Arguments
     ///
-    /// * `local_uri` - The URI identifying the (local) uEntity that the transport runs on.
+    /// * `config` - Zenoh configuration. You can refer to [here](https://github.com/eclipse-zenoh/zenoh/blob/0.11.0/DEFAULT_CONFIG.json5) for more configuration details.
+    /// * `uri` - Local `UUri`. Note that the Authority of the `UUri` MUST be non-empty and the resource ID should be non-zero.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the URI contains an empty or wildcard authority name
-    /// or has a non-zero resource ID.
-    pub fn builder<U: Into<String>>(
-        local_authority: U,
-    ) -> Result<UPTransportZenohBuilder<InitialBuilderState>, UStatus> {
-        let authority_name = local_authority.into();
-        if authority_name.is_empty() || &authority_name == "*" {
-            return Err(UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                "Authority name must be non-empty and must not be the wildcard authority name",
-            ));
-        }
-
-        UUri::verify_authority(&authority_name).map_err(|err| {
-            UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                format!("Invalid authority name: {err}"),
-            )
-        })?;
-
-        Ok(UPTransportZenohBuilder {
-            common: Box::new(CommonProperties {
-                local_authority: authority_name,
-                max_listeners: DEFAULT_MAX_LISTENERS,
-            }),
-            extra: InitialBuilderState,
-        })
-    }
-
-    async fn init_with_config(
-        config: Config,
-        local_authority: String,
-        max_listeners: usize,
-    ) -> Result<UPTransportZenoh, UStatus> {
-        let session = zenoh::open(config).await.map_err(|err| {
-            let msg = "Failed to open Zenoh session";
-            error!("{msg}: {err}");
-            UStatus::fail_with_code(UCode::INTERNAL, msg)
-        })?;
-        Ok(Self::init_with_session(
-            session,
-            local_authority,
-            max_listeners,
-        ))
-    }
-
-    fn init_with_session(
-        session: Session,
-        local_authority: String,
-        max_listeners: usize,
-    ) -> UPTransportZenoh {
-        let session_to_use = Arc::new(session);
-        UPTransportZenoh {
-            session: session_to_use.clone(),
-            subscribers: ListenerRegistry::new(session_to_use, max_listeners),
-            local_authority,
-        }
-    }
-
-    /// Enables a tracing formatter subscriber that is initialized from the `RUST_LOG` environment variable.
-    pub fn try_init_log_from_env() {
-        zenoh::init_log_from_env_or("");
-    }
-}
-
-struct CommonProperties {
-    local_authority: String,
-    max_listeners: usize,
-}
-
-pub struct InitialBuilderState;
-pub struct ConfigBuilderState {
-    config: zenoh_config::Config,
-}
-pub struct ConfigPathBuilderState {
-    config_path: String,
-}
-
-pub struct SessionBuilderState {
-    zenoh_session: Session,
-}
-
-pub trait BuilderState {}
-impl BuilderState for InitialBuilderState {}
-impl BuilderState for ConfigBuilderState {}
-impl BuilderState for ConfigPathBuilderState {}
-impl BuilderState for SessionBuilderState {}
-
-pub struct UPTransportZenohBuilder<S: BuilderState> {
-    common: Box<CommonProperties>,
-    extra: S,
-}
-
-impl UPTransportZenohBuilder<InitialBuilderState> {
-    /// Sets the Zenoh configuration to use for the transport.
-    ///
-    /// Please refer to the [Zenoh documentation](https://zenoh.io/docs/manual/configuration/) for details.
-    #[must_use]
-    pub fn with_config(
-        self,
-        config: zenoh_config::Config,
-    ) -> UPTransportZenohBuilder<ConfigBuilderState> {
-        UPTransportZenohBuilder {
-            common: self.common,
-            extra: ConfigBuilderState { config },
-        }
-    }
-
-    /// Sets the path to a Zenoh configuration file to use for the transport.
-    ///
-    /// Please refer to the [Zenoh documentation](https://zenoh.io/docs/manual/configuration/) for details.
-    #[must_use]
-    pub fn with_config_path(
-        self,
-        config_path: String,
-    ) -> UPTransportZenohBuilder<ConfigPathBuilderState> {
-        UPTransportZenohBuilder {
-            common: self.common,
-            extra: ConfigPathBuilderState { config_path },
-        }
-    }
-
-    /// Sets an existing Zenoh session to use for the transport.
-    #[must_use]
-    pub fn with_session(
-        self,
-        zenoh_session: Session,
-    ) -> UPTransportZenohBuilder<SessionBuilderState> {
-        UPTransportZenohBuilder {
-            common: self.common,
-            extra: SessionBuilderState { zenoh_session },
-        }
-    }
-}
-
-impl UPTransportZenohBuilder<ConfigBuilderState> {
-    /// Creates the transport based on the provided configuration properties.
-    ///
-    /// # Returns
-    ///
-    /// The newly created transport instance. Note that the builder consumes itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transport cannot be created.
+    /// Will return `Err` if unable to create `UPTransportZenoh`
     ///
     /// # Examples
     ///
@@ -222,133 +77,130 @@ impl UPTransportZenohBuilder<ConfigBuilderState> {
     /// #[tokio::main]
     /// # async fn main() {
     /// use up_transport_zenoh::{zenoh_config, UPTransportZenoh};
-    ///
-    /// assert!(UPTransportZenoh::builder("local_authority")
-    ///    .expect("Invalid authority name")
-    ///    .with_config(zenoh_config::Config::default())
-    ///    .with_max_listeners(10)
-    ///    .build()
-    ///    .await
-    ///    .is_ok());
+    /// let uptransport =
+    ///     UPTransportZenoh::new(zenoh_config::Config::default(), "//vehicle1/ABCD/1/0")
+    ///         .await
+    ///         .unwrap();
     /// # }
     /// ```
-    pub async fn build(self) -> Result<UPTransportZenoh, UStatus> {
-        UPTransportZenoh::init_with_config(
-            self.extra.config,
-            self.common.local_authority,
-            self.common.max_listeners,
-        )
-        .await
+    pub async fn new(
+        config: zenoh_config::Config,
+        uri: impl Into<String>,
+    ) -> Result<UPTransportZenoh, UStatus> {
+        let uri = mechanics::parse_local_uri(uri)?;
+        let Ok(session) = zenoh::open(config).await else {
+            let msg = "Unable to open Zenoh session".to_string();
+            error!("{msg}");
+            return Err(UStatus::fail_with_code(UCode::Internal, msg));
+        };
+        Ok(UPTransportZenoh::init_with_session(session, uri))
     }
-}
 
-impl UPTransportZenohBuilder<ConfigPathBuilderState> {
-    /// Creates the transport based on the provided configuration file.
-    ///
-    /// # Returns
-    ///
-    /// The newly created transport instance. Note that the builder consumes itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transport cannot be created, e.g. because the configuration
-    /// file cannot be read or is invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #[tokio::main]
-    /// # async fn main() {
-    /// use up_transport_zenoh::UPTransportZenoh;
-    ///
-    /// assert!(UPTransportZenoh::builder("local_authority")
-    ///    .expect("Invalid authority name")
-    ///    .with_config_path("non-existing-config.json5".to_string())
-    ///    .build()
-    ///    .await
-    ///    .is_err_and(|e| e.get_code() == up_rust::UCode::INVALID_ARGUMENT));
-    /// # }
-    /// ```
-    pub async fn build(self) -> Result<UPTransportZenoh, UStatus> {
-        let config = zenoh_config::Config::from_file(self.extra.config_path).map_err(|e| {
-            error!("Failed to load Zenoh config from file: {e}");
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, e.to_string())
-        })?;
-        UPTransportZenoh::init_with_config(
-            config,
-            self.common.local_authority,
-            self.common.max_listeners,
-        )
-        .await
+    fn init_with_session(session: Session, uri: UUri) -> UPTransportZenoh {
+        let session = Arc::new(session);
+        UPTransportZenoh {
+            subscribers: ListenerRegistry::new(session.clone(), DEFAULT_MAX_LISTENERS),
+            session,
+            queryable_map: Arc::new(Mutex::new(HashMap::new())),
+            query_map: Arc::new(Mutex::new(HashMap::new())),
+            uri,
+        }
     }
-}
 
-impl UPTransportZenohBuilder<SessionBuilderState> {
-    /// Creates the transport based on the provided configuration file.
-    ///
-    /// # Returns
-    ///
-    /// The newly created transport instance. Note that the builder consumes itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transport cannot be created.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #[tokio::main]
-    /// # async fn main() {
-    /// use up_transport_zenoh::UPTransportZenoh;
-    /// use zenoh::config::Config;
-    ///
-    /// let zenoh_session = zenoh::open(Config::default()).await.expect("Failed to open Zenoh session");
-    /// assert!(UPTransportZenoh::builder("local_authority")
-    ///    .expect("Invalid authority name")
-    ///    .with_session(zenoh_session)
-    ///    .with_max_listeners(10)
-    ///    .build()
-    ///    .is_ok());
-    /// # }
-    /// ```
-    pub fn build(self) -> Result<UPTransportZenoh, UStatus> {
-        Ok(UPTransportZenoh::init_with_session(
-            self.extra.zenoh_session,
-            self.common.local_authority,
-            self.common.max_listeners,
-        ))
+    /// The function to enable tracing subscriber from the environment variables `RUST_LOG`.
+    pub fn try_init_log_from_env() {
+        if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_level(true)
+                .with_target(true);
+
+            let subscriber = subscriber.finish();
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        }
     }
-}
 
-impl<S: BuilderState> UPTransportZenohBuilder<S> {
-    /// Sets the maximum number of listeners that can be registered with this transport.
-    /// If not set explicitly, the default value is 100.
-    #[must_use]
-    pub fn with_max_listeners(mut self, max_listeners: usize) -> Self {
-        self.common.max_listeners = max_listeners;
-        self
+    // The format of Zenoh key should be
+    // up/[src.authority]/[src.ue_type]/[src.ue_instance]/[src.ue_version_major]/[src.resource_id]/[sink.authority]/[sink.ue_type]/[sink.ue_instance]/[sink.ue_version_major]/[sink.resource_id]
+    fn to_zenoh_key_string(&self, src_uri: &UUri, dst_uri: Option<&UUri>) -> String {
+        mechanics::to_zenoh_key_string(&self.uri, src_uri, dst_uri)
+    }
+
+    #[allow(clippy::match_same_arms)]
+    fn map_zenoh_priority(upriority: UPriority) -> Priority {
+        mechanics::map_zenoh_priority(upriority)
+    }
+
+    fn uattributes_to_attachment(uattributes: &UAttributes) -> anyhow::Result<ZBytes> {
+        let mut attachment = Vec::new();
+        attachment.push(UPROTOCOL_MAJOR_VERSION);
+        attachment.extend_from_slice(&uattributes.write_to_protobuf_bytes()?);
+        Ok(ZBytes::from(attachment))
+    }
+
+    fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes> {
+        let attachment = attachment.to_bytes();
+        let Some((&version, bytes)) = attachment.as_ref().split_first() else {
+            let msg = "Unable to get the UAttributes version".to_string();
+            error!("{msg}");
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
+        };
+        if version != UPROTOCOL_MAJOR_VERSION {
+            let msg =
+                format!("UAttributes version is {version} (should be {UPROTOCOL_MAJOR_VERSION})");
+            error!("{msg}");
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
+        }
+        if bytes.is_empty() {
+            let msg = "Unable to get the UAttributes".to_string();
+            error!("{msg}");
+            return Err(UStatus::fail_with_code(UCode::InvalidArgument, msg).into());
+        }
+        UAttributes::parse_from_protobuf_bytes(bytes).map_err(Into::into)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use test_case::test_case;
+    use up_rust::UUri;
 
-    #[test_case("vehicle1" => true; "succeeds for valid authority name")]
-    #[test_case("This is not an authority name" => false; "fails for invalid authority name")]
-    #[test_case("" => false; "fails for empty authority name")]
-    #[test_case("*" => false; "fails for wildcard authority name")]
+    #[test_case("//vehicle1/AABB/7/0", true; "succeeds with valid UUri")]
+    #[test_case("This is not UUri", false; "fails with invalid UUri")]
+    #[test_case("/AABB/7/0", false; "fails with empty UAuthority")]
+    #[test_case("//vehicle1/AABB/7/1", false; "fails with non-zero resource ID")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_getting_a_builder<S: Into<String>>(local_authority: S) -> bool {
-        if let Ok(builder) = UPTransportZenoh::builder(local_authority) {
-            builder
-                .with_config(zenoh_config::Config::default())
-                .build()
-                .await
-                .is_ok()
+    async fn test_new_up_transport_zenoh(uri: &str, expected_result: bool) {
+        let up_transport_zenoh = UPTransportZenoh::new(zenoh_config::Config::default(), uri).await;
+        assert_eq!(up_transport_zenoh.is_ok(), expected_result);
+    }
+
+    // Mapping with the examples in Zenoh spec
+    #[test_case("/10AB/3/80CD", None, "up/192.168.1.100/10AB/0/3/80CD/{}/{}/{}/{}/{}"; "Send Publish")]
+    #[test_case("//192.168.1.100/10AB/3/80CD", None, "up/192.168.1.100/10AB/0/3/80CD/{}/{}/{}/{}/{}"; "Subscribe messages")]
+    #[test_case("//192.168.1.100/10AB/3/80CD", Some("//192.168.1.101/20EF/4/0"), "up/192.168.1.100/10AB/0/3/80CD/192.168.1.101/20EF/0/4/0"; "Send Notification")]
+    #[test_case("//*/FFFF/FF/FFFF", Some("//192.168.1.101/20EF/4/0"), "up/*/*/0/*/*/192.168.1.101/20EF/0/4/0"; "Receive all Notifications")]
+    #[test_case("//my-host1/10AB/3/0", Some("//my-host2/20EF/4/B"), "up/my-host1/10AB/0/3/0/my-host2/20EF/0/4/B"; "Send Request")]
+    #[test_case("//*/FFFF/FF/FFFF", Some("//my-host2/20EF/4/B"), "up/*/*/0/*/*/my-host2/20EF/0/4/B"; "Receive all Requests")]
+    #[test_case("//*/FFFF/FF/FFFF", Some("//[::1]/FFFF/FF/FFFF"), "up/*/*/0/*/*/[::1]/*/0/*/*"; "Receive all messages to a device")]
+    fn test_to_zenoh_key_string(src_uri: &str, sink_uri: Option<&str>, zenoh_key: &str) {
+        let local_uri = UUri::from_str("//192.168.1.100/10AB/3/0").unwrap();
+        let src = UUri::from_str(src_uri).unwrap();
+        if let Some(sink) = sink_uri {
+            let sink = UUri::from_str(sink).unwrap();
+            assert_eq!(
+                mechanics::to_zenoh_key_string(&local_uri, &src, Some(&sink)),
+                zenoh_key.to_string()
+            );
         } else {
-            false
+            assert_eq!(
+                mechanics::to_zenoh_key_string(&local_uri, &src, None),
+                zenoh_key.to_string()
+            );
         }
     }
 }
