@@ -3807,9 +3807,20 @@ dependencies = [
 [[package]]
 name = "up-wire-xcdrv2"
 version = "0.0.0"
-source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=84cab0922b6727960d51682a6b48583110bbde61#84cab0922b6727960d51682a6b48583110bbde61"
+source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=ce0c4ca12cdb44fafbd5aa5adc1fa8f26451e625#ce0c4ca12cdb44fafbd5aa5adc1fa8f26451e625"
 dependencies = [
  "up-rust",
+ "up-wire-xcdrv2-macros",
+]
+
+[[package]]
+name = "up-wire-xcdrv2-macros"
+version = "0.0.0"
+source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=ce0c4ca12cdb44fafbd5aa5adc1fa8f26451e625#ce0c4ca12cdb44fafbd5aa5adc1fa8f26451e625"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

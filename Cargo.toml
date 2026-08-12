@@ -92,7 +92,7 @@ test-case = { version = "3.3" }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "signal"] }
 tracing-subscriber = "0.3.23"
 up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "7a82babfa7f94aed5b7aac1ac81babff20747bf2", default-features = false, features = ["communication", "test-util"] }
-up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "84cab0922b6727960d51682a6b48583110bbde61" }
+up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "ce0c4ca12cdb44fafbd5aa5adc1fa8f26451e625" }
 
 [[test]]
 name = "zero_copy_transport"
