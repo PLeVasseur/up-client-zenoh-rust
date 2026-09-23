@@ -36,9 +36,10 @@ use up_rust::{
     ULoanedContiguousZeroCopyRxFrame,
 };
 use up_rust::{
-    NativePrefixFrameMetadataCodec, PayloadEncoding, PublishBuilderState, StableContainerPayload,
-    StableContainerWireFormat, UCode, UFrameMetadata, UListener, UMessage, UMessageBuilder,
-    UMessageType, UStatus, UTransport, UUri, UWireRx, UWireTransport, UZeroCopyListener,
+    NativePrefixFrameMetadataCodec, NativeProfile, NativeProfileAgreement, NativeProfileMode,
+    NativeProfileTable, PayloadEncoding, PublishBuilderState, StableContainerWireFormat, UCode,
+    UFrameMetadata, UHasWire, UListener, UMessage, UMessageBuilder, UMessageType, UStatus,
+    UTransport, UUri, UWireRx, UWireTransport, UWithNativePrefixWire, UZeroCopyListener,
     UZeroCopyTransportImpl, UUID,
 };
 use up_transport_zenoh::{zenoh_config, UPTransportZenoh, ZenohRxFrame, ZenohZeroCopyCore};
@@ -108,17 +109,39 @@ impl PayloadContractPath {
 struct BenchCase {
     authority: String,
     source: UUri,
+    native_profile: NativeProfileAgreement,
 }
 
 impl BenchCase {
-    fn new(fixture_name: &str) -> Self {
+    fn new(contract: &PayloadContractCase) -> Self {
+        let fixture_name = contract.name();
         let sequence = next_sequence();
         let authority = format!(
             "zenoh-userializer-bench-{}-{fixture_name}-{sequence}",
             std::process::id()
         );
         let source = uri(&authority, 0x4210, resource_id(0x9000, sequence));
-        Self { authority, source }
+        // This same-process benchmark configures both peers from one explicit
+        // deployment table, outside the measured send/receive operation.
+        let encoding =
+            PayloadEncoding::from_id(0xF100 + contract.case_id()).expect("private benchmark ID");
+        let representation = payload_contract::stable_payload_representation(contract)
+            .expect("native fixture representation");
+        let profile = NativeProfile::new(
+            format!("zenoh-payload-benchmark.{fixture_name}"),
+            1,
+            NativeProfileMode::Table(
+                NativeProfileTable::new([(encoding, representation)]).unwrap(),
+            ),
+        )
+        .unwrap();
+        let native_profile =
+            NativeProfileAgreement::new(Arc::new(profile.clone()), &profile).unwrap();
+        Self {
+            authority,
+            source,
+            native_profile,
+        }
     }
 
     fn message_builder(&self, id: UUID) -> UMessageBuilder<PublishBuilderState> {
@@ -161,7 +184,7 @@ struct OwnedAckListener {
     tx: mpsc::UnboundedSender<PayloadContractAck>,
     contract: PayloadContractCase,
     path: PayloadContractPath,
-    encoding: Option<PayloadEncoding>,
+    native_profile: Option<NativeProfileAgreement>,
 }
 
 #[cfg(feature = "payload-contract-benchmarks")]
@@ -173,7 +196,7 @@ impl UListener for OwnedAckListener {
                 &message,
                 &self.contract,
                 self.path,
-                self.encoding.as_ref(),
+                self.native_profile.as_ref(),
             ))
             .expect("owned benchmark receive channel should remain open");
     }
@@ -206,7 +229,10 @@ async fn build_owned_transport(authority: &str) -> Arc<UPTransportZenoh> {
     )
 }
 
-async fn build_selected_wire_transport(authority: &str) -> Arc<StableZenohTransport> {
+async fn build_selected_wire_transport(
+    authority: &str,
+    profile: &NativeProfileAgreement,
+) -> Arc<StableZenohTransport> {
     let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
         .with_config(zenoh_config::Config::default())
         .with_shm_segment_size(ZENOH_SHM_SEGMENT_SIZE)
@@ -214,7 +240,7 @@ async fn build_selected_wire_transport(authority: &str) -> Arc<StableZenohTransp
         .build()
         .await
         .expect("Zenoh selected-wire benchmark core should build");
-    Arc::new(core.with_selected_wire(StableContainerWireFormat))
+    Arc::new(core.into_stable_container_transport(profile.clone()))
 }
 
 async fn register_owned_listener(
@@ -224,12 +250,8 @@ async fn register_owned_listener(
     contract: &PayloadContractCase,
     tx: mpsc::UnboundedSender<PayloadContractAck>,
 ) {
-    let encoding = match path {
-        PayloadContractPath::StableOwnedBytes => Some(
-            payload_contract::stable_owned_fixture_for(contract, PAYLOAD_CONTRACT_SEQUENCE)
-                .expect("stable owned fixture should be available")
-                .encoding,
-        ),
+    let native_profile = match path {
+        PayloadContractPath::StableOwnedBytes => Some(case.native_profile.clone()),
         PayloadContractPath::ProtobufOwned => None,
         PayloadContractPath::StableZcNoZero => {
             unreachable!("selected-wire path uses zero-copy listener")
@@ -243,7 +265,7 @@ async fn register_owned_listener(
                 tx,
                 contract: *contract,
                 path,
-                encoding,
+                native_profile,
             }),
         )
         .await
@@ -282,12 +304,15 @@ async fn send_owned(
                 .map_err(|error| invalid_argument(error.to_string()))?,
             PayloadEncoding::PROTOBUF,
         ),
-        PayloadContractPath::StableOwnedBytes => (
-            payload_contract::stable_owned_fixture_for(contract, PAYLOAD_CONTRACT_SEQUENCE)
-                .map_err(|error| invalid_argument(error.to_string()))?
-                .bytes,
-            PayloadEncoding::RAW,
-        ),
+        PayloadContractPath::StableOwnedBytes => {
+            let fixture = payload_contract::stable_owned_fixture_for(
+                contract,
+                PAYLOAD_CONTRACT_SEQUENCE,
+                &case.native_profile,
+            )
+            .map_err(|error| invalid_argument(error.to_string()))?;
+            (fixture.bytes, fixture.identity.encoding())
+        }
         PayloadContractPath::StableZcNoZero => {
             unreachable!("selected-wire path uses zero-copy send")
         }
@@ -300,145 +325,106 @@ async fn send_selected_wire(
     metadata: UFrameMetadata,
     contract: &PayloadContractCase,
 ) -> Result<(), UStatus> {
+    let profile = transport
+        .native_profile()
+        .expect("configured native benchmark profile");
+    let representation = payload_contract::stable_payload_representation(contract)
+        .map_err(|error| invalid_argument(error.to_string()))?;
+    let identity = profile
+        .identity_for(&representation)
+        .map_err(|error| invalid_argument(error.to_string()))?;
+    let metadata = metadata
+        .with_native_payload_identity(identity)
+        .map_err(|error| invalid_argument(error.to_string()))?;
     match contract.kind() {
         PayloadContractCaseKind::CanClassicMax => {
             transport
-                .send_stable_payload::<CanClassicFrameV1, _>(
-                    metadata
-                        .with_payload_encoding(
-                            StableContainerPayload::<CanClassicFrameV1>::encoding(),
-                        )
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_can_classic_max(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("CAN classic fixture initialization")
-                    },
-                )
+                .send_stable_payload::<CanClassicFrameV1, _>(metadata, |payload| {
+                    payload_contract::init_can_classic_max(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("CAN classic fixture initialization")
+                })
                 .await
         }
         PayloadContractCaseKind::CanFdMax => {
             transport
-                .send_stable_payload::<CanFdFrameV1, _>(
-                    metadata
-                        .with_payload_encoding(StableContainerPayload::<CanFdFrameV1>::encoding())
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_can_fd_max(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("CAN FD fixture initialization")
-                    },
-                )
+                .send_stable_payload::<CanFdFrameV1, _>(metadata, |payload| {
+                    payload_contract::init_can_fd_max(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("CAN FD fixture initialization")
+                })
                 .await
         }
         PayloadContractCaseKind::SomeIpSingleMtu => {
             transport
-                .send_stable_payload::<SomeIpSignalBatchMtuV1, _>(
-                    metadata
-                        .with_payload_encoding(
-                            StableContainerPayload::<SomeIpSignalBatchMtuV1>::encoding(),
-                        )
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_someip_single_mtu(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("SOME/IP fixture initialization")
-                    },
-                )
+                .send_stable_payload::<SomeIpSignalBatchMtuV1, _>(metadata, |payload| {
+                    payload_contract::init_someip_single_mtu(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("SOME/IP fixture initialization")
+                })
                 .await
         }
-        PayloadContractCaseKind::Streamer4k => transport
-            .send_stable_payload::<StreamChunk4kV1, _>(
-                metadata
-                    .with_payload_encoding(StableContainerPayload::<StreamChunk4kV1>::encoding())
-                    .expect("stable encoding"),
-                |payload| {
+        PayloadContractCaseKind::Streamer4k => {
+            transport
+                .send_stable_payload::<StreamChunk4kV1, _>(metadata, |payload| {
                     payload_contract::init_streamer_4k(
                         payload.into_initializer(),
                         PAYLOAD_CONTRACT_SEQUENCE,
                     )
                     .expect("4K stream fixture initialization")
-                },
-            )
-            .await,
+                })
+                .await
+        }
         PayloadContractCaseKind::RadarArs548DetectionList => {
             transport
-                .send_stable_payload::<RadarDetectionListArs548V1, _>(
-                    metadata
-                        .with_payload_encoding(
-                            StableContainerPayload::<RadarDetectionListArs548V1>::encoding(),
-                        )
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_radar_ars548_detection_list(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("radar fixture initialization")
-                    },
-                )
+                .send_stable_payload::<RadarDetectionListArs548V1, _>(metadata, |payload| {
+                    payload_contract::init_radar_ars548_detection_list(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("radar fixture initialization")
+                })
                 .await
         }
         PayloadContractCaseKind::Streamer64k => {
             transport
-                .send_stable_payload::<StreamChunk64kV1, _>(
-                    metadata
-                        .with_payload_encoding(
-                            StableContainerPayload::<StreamChunk64kV1>::encoding(),
-                        )
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_streamer_64k(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("64K stream fixture initialization")
-                    },
-                )
+                .send_stable_payload::<StreamChunk64kV1, _>(metadata, |payload| {
+                    payload_contract::init_streamer_64k(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("64K stream fixture initialization")
+                })
                 .await
         }
         #[cfg(feature = "payload-contract-large-benchmarks")]
         PayloadContractCaseKind::LidarHesaiAt128PointCloud => {
             transport
-                .send_stable_payload::<LidarPointCloudHesaiAt128V1, _>(
-                    metadata
-                        .with_payload_encoding(
-                            StableContainerPayload::<LidarPointCloudHesaiAt128V1>::encoding(),
-                        )
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_lidar_hesai_at128_point_cloud(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("lidar fixture initialization")
-                    },
-                )
+                .send_stable_payload::<LidarPointCloudHesaiAt128V1, _>(metadata, |payload| {
+                    payload_contract::init_lidar_hesai_at128_point_cloud(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("lidar fixture initialization")
+                })
                 .await
         }
         #[cfg(feature = "payload-contract-large-benchmarks")]
         PayloadContractCaseKind::Camera8mpBayerRggb12p => {
             transport
-                .send_stable_payload::<CameraBayerRggb12pFrame8mpV1, _>(
-                    metadata
-                        .with_payload_encoding(
-                            StableContainerPayload::<CameraBayerRggb12pFrame8mpV1>::encoding(),
-                        )
-                        .expect("stable encoding"),
-                    |payload| {
-                        payload_contract::init_camera_8mp_bayer_rggb12p(
-                            payload.into_initializer(),
-                            PAYLOAD_CONTRACT_SEQUENCE,
-                        )
-                        .expect("camera fixture initialization")
-                    },
-                )
+                .send_stable_payload::<CameraBayerRggb12pFrame8mpV1, _>(metadata, |payload| {
+                    payload_contract::init_camera_8mp_bayer_rggb12p(
+                        payload.into_initializer(),
+                        PAYLOAD_CONTRACT_SEQUENCE,
+                    )
+                    .expect("camera fixture initialization")
+                })
                 .await
         }
     }
@@ -480,7 +466,7 @@ fn owned_ack(
     message: &UMessage,
     contract: &PayloadContractCase,
     path: PayloadContractPath,
-    encoding: Option<&PayloadEncoding>,
+    native_profile: Option<&NativeProfileAgreement>,
 ) -> PayloadContractAck {
     let payload = message.payload().expect("owned benchmark frame payload");
     match path {
@@ -494,11 +480,14 @@ fn owned_ack(
             .expect("protobuf payload-contract frame should validate");
         }
         PayloadContractPath::StableOwnedBytes => {
-            assert_eq!(message.payload_encoding(), Some(PayloadEncoding::RAW));
+            let profile = native_profile.expect("configured native benchmark agreement");
+            let metadata = up_rust::frame::metadata::try_project_umessage_to_frame_metadata_with_native_profile(message, profile)
+                .expect("recover identity from actual carried ID and agreed profile");
             payload_contract::validate_stable_owned_bytes(
                 contract,
                 PAYLOAD_CONTRACT_SEQUENCE,
-                encoding,
+                &metadata,
+                profile,
                 &payload,
             )
             .expect("stable owned payload-contract frame should validate");
@@ -541,33 +530,36 @@ fn validate_stable_payload_for_case(
     frame: &impl ULoanedContiguousZeroCopyRxFrame,
     contract: &PayloadContractCase,
 ) {
+    let profile = frame
+        .native_profile()
+        .expect("receive view retained its native profile");
     match contract.kind() {
         PayloadContractCaseKind::CanClassicMax => payload_contract::validate_stable_payload(
             contract,
             PAYLOAD_CONTRACT_SEQUENCE,
             frame
-                .borrow_stable_payload::<CanClassicFrameV1>()
+                .borrow_stable_payload::<CanClassicFrameV1>(profile)
                 .expect("CAN Classic stable payload-contract frame should borrow"),
         ),
         PayloadContractCaseKind::CanFdMax => payload_contract::validate_stable_payload(
             contract,
             PAYLOAD_CONTRACT_SEQUENCE,
             frame
-                .borrow_stable_payload::<CanFdFrameV1>()
+                .borrow_stable_payload::<CanFdFrameV1>(profile)
                 .expect("CAN FD stable payload-contract frame should borrow"),
         ),
         PayloadContractCaseKind::SomeIpSingleMtu => payload_contract::validate_stable_payload(
             contract,
             PAYLOAD_CONTRACT_SEQUENCE,
             frame
-                .borrow_stable_payload::<SomeIpSignalBatchMtuV1>()
+                .borrow_stable_payload::<SomeIpSignalBatchMtuV1>(profile)
                 .expect("SOME/IP stable payload-contract frame should borrow"),
         ),
         PayloadContractCaseKind::Streamer4k => payload_contract::validate_stable_payload(
             contract,
             PAYLOAD_CONTRACT_SEQUENCE,
             frame
-                .borrow_stable_payload::<StreamChunk4kV1>()
+                .borrow_stable_payload::<StreamChunk4kV1>(profile)
                 .expect("stream 4K stable payload-contract frame should borrow"),
         ),
         PayloadContractCaseKind::RadarArs548DetectionList => {
@@ -575,7 +567,7 @@ fn validate_stable_payload_for_case(
                 contract,
                 PAYLOAD_CONTRACT_SEQUENCE,
                 frame
-                    .borrow_stable_payload::<RadarDetectionListArs548V1>()
+                    .borrow_stable_payload::<RadarDetectionListArs548V1>(profile)
                     .expect("radar stable payload-contract frame should borrow"),
             )
         }
@@ -583,7 +575,7 @@ fn validate_stable_payload_for_case(
             contract,
             PAYLOAD_CONTRACT_SEQUENCE,
             frame
-                .borrow_stable_payload::<StreamChunk64kV1>()
+                .borrow_stable_payload::<StreamChunk64kV1>(profile)
                 .expect("stream 64K stable payload-contract frame should borrow"),
         ),
         #[cfg(feature = "payload-contract-large-benchmarks")]
@@ -592,7 +584,7 @@ fn validate_stable_payload_for_case(
                 contract,
                 PAYLOAD_CONTRACT_SEQUENCE,
                 frame
-                    .borrow_stable_payload::<LidarPointCloudHesaiAt128V1>()
+                    .borrow_stable_payload::<LidarPointCloudHesaiAt128V1>(profile)
                     .expect("LiDAR stable payload-contract frame should borrow"),
             )
         }
@@ -602,7 +594,7 @@ fn validate_stable_payload_for_case(
                 contract,
                 PAYLOAD_CONTRACT_SEQUENCE,
                 frame
-                    .borrow_stable_payload::<CameraBayerRggb12pFrame8mpV1>()
+                    .borrow_stable_payload::<CameraBayerRggb12pFrame8mpV1>(profile)
                     .expect("camera stable payload-contract frame should borrow"),
             )
         }
@@ -636,7 +628,7 @@ fn bench_payload_contract_matrix(
             PayloadContractPath::StableZcNoZero,
             PayloadContractPath::StableOwnedBytes,
         ] {
-            let case = BenchCase::new(contract.name());
+            let case = BenchCase::new(contract);
             let expected_len = transported_len(path, contract);
             let (tx, mut rx) = mpsc::unbounded_channel();
             let owned_transport = match path {
@@ -655,8 +647,10 @@ fn bench_payload_contract_matrix(
             };
             let selected_transport = match path {
                 PayloadContractPath::StableZcNoZero => {
-                    let transport =
-                        runtime.block_on(build_selected_wire_transport(&case.authority));
+                    let transport = runtime.block_on(build_selected_wire_transport(
+                        &case.authority,
+                        &case.native_profile,
+                    ));
                     runtime.block_on(register_selected_wire_listener(
                         &transport, &case, contract, tx,
                     ));

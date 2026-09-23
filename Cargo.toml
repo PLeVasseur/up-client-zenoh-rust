@@ -78,7 +78,7 @@ time = { version = "0.3.47" }
 tokio = { version = "1.53.1", default-features = false }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "c1d13ca31859b9cc0086ef5d4b953907f24094ec", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-user-api", "transport-implementer-api", "wire-implementer-api", "zero-copy-transport"] }
+up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "3fcaa348455d167b9092fd71eaa7e7d1eed88051", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-user-api", "transport-implementer-api", "wire-implementer-api", "zero-copy-transport"] }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
 zenoh = { version = "1.9.0", features = ["internal"] }
 
@@ -91,8 +91,8 @@ serial_test = { version = "3.5.0" }
 test-case = { version = "3.3" }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "signal"] }
 tracing-subscriber = "0.3.23"
-up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "c1d13ca31859b9cc0086ef5d4b953907f24094ec", default-features = false, features = ["communication", "test-util"] }
-up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "78c7002b0a6257e27165a059e04398732f8baf26" }
+up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "3fcaa348455d167b9092fd71eaa7e7d1eed88051", default-features = false, features = ["communication", "test-util"] }
+up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "d0377c6bf75091eb66699955e5068148a8c76311" }
 
 [[test]]
 name = "zero_copy_transport"

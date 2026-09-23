@@ -109,14 +109,14 @@ async fn test_publish_message_gets_delivered_to_listener(
 #[test_case::test_case(
     "vehicle1",
     12_000,
-    "//vehicle1/70222/2/87A", "//vehicle1/55A1/2/0",
+    "//vehicle1/70222/2/887A", "//vehicle1/55A1/2/0",
     "//vehicle1/FFFFFFFF/FF/FFFF", "//*/FFFFFFFF/FF/FFFF";
     "for all messages from specific authority")]
 // [utest->dsn~up-attributes-ttl~1]
 #[test_case::test_case(
     "vehicle1",
     0,
-    "//vehicle1/70222/2/87A", "//vehicle1/55A1/2/0",
+    "//vehicle1/70222/2/887A", "//vehicle1/55A1/2/0",
     "//*/FFFF0222/FF/FFFF", "//vehicle1/55A1/2/0";
     "source filter with wildcard authority and service instance ID")]
 #[tokio::test(flavor = "multi_thread")]

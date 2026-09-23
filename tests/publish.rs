@@ -110,7 +110,7 @@ async fn test_publish_private_use_encoding_survives_attachment() {
         .unwrap();
     let publish_uuri = uptransport_send.get_resource_uri(0x8002);
     let listen_uuri = UUri::from_str("//open_publisher/1/1/8002").unwrap();
-    let payload_encoding = PayloadEncoding::from_id(0x1000_0A2D).unwrap();
+    let payload_encoding = PayloadEncoding::from_id(0xFA2D).unwrap();
 
     let pub_listener = Arc::new(PublishNotificationListener::new());
     uptransport_recv
