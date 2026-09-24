@@ -18,8 +18,8 @@ use up_rust::wire_implementer_api::UWire;
 use up_rust::{UCode, UStatus, UUri};
 use zenoh::{bytes::ZBytes, sample::Sample};
 
-use crate::listener_activity::ListenerActivity;
 use crate::mechanics::ZenohWireMechanics;
+use up_rust::ListenerAdmission;
 
 /// Real Zenoh owned-frame selected-wire core for benchmark/support paths.
 ///
@@ -65,7 +65,7 @@ struct OwnedListenerRegistration {
     owned_listener: Arc<dyn UEncodedOwnedListener>,
     zenoh_listener: ComparableOwnedListener,
     subscriber: zenoh::pubsub::Subscriber<()>,
-    activity: Arc<ListenerActivity>,
+    activity: Arc<ListenerAdmission>,
 }
 
 #[derive(Clone)]
@@ -163,7 +163,7 @@ impl UOwnedTransportCore for ZenohOwnedCore {
             .to_zenoh_key_string(source_filter, sink_filter);
         let comparable = ComparableOwnedListener::new(listener.clone());
         let callback_listener = comparable.clone();
-        let activity = Arc::new(ListenerActivity::new());
+        let activity = Arc::new(ListenerAdmission::new());
         let callback_activity = Arc::clone(&activity);
         let subscriber = self
             .mechanics

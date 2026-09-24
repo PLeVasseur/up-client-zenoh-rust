@@ -13,10 +13,10 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::listener_activity::ListenerActivity;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::{debug, enabled, info, warn, Level};
+use up_rust::ListenerAdmission;
 use up_rust::{ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UStatus};
 use zenoh::{bytes::ZBytes, pubsub::Subscriber, sample::Sample, Session};
 
@@ -48,7 +48,7 @@ fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes>
 
 // mapping of (Zenoh Key expression, Message Listener) ->  Zenoh Subscriber
 type SubscriberMap =
-    Mutex<HashMap<(String, ComparableListener), (Subscriber<()>, Arc<ListenerActivity>)>>;
+    Mutex<HashMap<(String, ComparableListener), (Subscriber<()>, Arc<ListenerAdmission>)>>;
 
 pub(crate) struct ListenerRegistry {
     subscribers: SubscriberMap,
@@ -98,7 +98,7 @@ impl ListenerRegistry {
         }
 
         let listener_to_invoke_in_callback = comparable_listener.clone();
-        let activity = Arc::new(ListenerActivity::new());
+        let activity = Arc::new(ListenerAdmission::new());
         let callback_activity = Arc::clone(&activity);
 
         // Setup callback

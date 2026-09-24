@@ -131,7 +131,7 @@ impl UPTransportZenoh {
         }
 
         let query_map = self.query_map.clone();
-        let activity = Arc::new(crate::listener_activity::ListenerActivity::new());
+        let activity = Arc::new(up_rust::ListenerAdmission::new());
         let callback_activity = Arc::clone(&activity);
         let callback = move |query: Query| {
             let Some(attachment) = query.attachment() else {

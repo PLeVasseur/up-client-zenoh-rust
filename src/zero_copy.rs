@@ -35,14 +35,14 @@ use zenoh::{
     Wait,
 };
 
-use crate::listener_activity::ListenerActivity;
 use crate::mechanics::ZenohWireMechanics;
+use up_rust::ListenerAdmission;
 
 type ZeroCopySubscriberMap = Arc<
     tokio::sync::Mutex<
         std::collections::HashMap<
             (String, ComparableZeroCopyListener),
-            (zenoh::pubsub::Subscriber<()>, Arc<ListenerActivity>),
+            (zenoh::pubsub::Subscriber<()>, Arc<ListenerAdmission>),
         >,
     >,
 >;
@@ -419,7 +419,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         }
 
         let callback_listener = comparable_listener.clone();
-        let activity = Arc::new(ListenerActivity::new());
+        let activity = Arc::new(ListenerAdmission::new());
         let callback_activity = Arc::clone(&activity);
         let subscriber = self
             .mechanics
