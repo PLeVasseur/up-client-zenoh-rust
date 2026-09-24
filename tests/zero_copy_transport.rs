@@ -235,6 +235,9 @@ async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> 
     transport.send_validated_zero_copy(buffer).await?;
 
     let frame = tokio::time::timeout(Duration::from_secs(5), receive_task).await???;
+    let address = frame.try_contiguous_payload().unwrap().as_ptr();
+    drop(transport);
+    assert_eq!(frame.try_contiguous_payload().unwrap().as_ptr(), address);
     let mut observed = Vec::new();
     frame.payload_reader().read_to_end(&mut observed)?;
 
@@ -632,6 +635,84 @@ async fn zero_copy_external_xcdrv2_wrong_wire_metadata_is_rejected() -> Result<(
         .await??
         .expect_err("wrong metadata rejected");
     assert_eq!(error.code(), UCode::InvalidArgument);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn native_loans_retain_storage_after_transport_drop() -> Result<(), TestError> {
+    let authority = format!("zenoh-loan-owner-{}", std::process::id());
+    let transport = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let spec = || {
+        UTxLoanSpec::payload(
+            metadata(
+                topic_for(&authority, 0x9400),
+                Some(PayloadEncoding::PROTOBUF),
+            ),
+            8,
+            8,
+        )
+    };
+    let mut initialized = transport.loan_validated_tx(spec()?).await?;
+    initialized.payload_mut().copy_from_slice(b"retained");
+    let initialized_address = initialized.payload().as_ptr();
+    let mut uninit = transport.loan_validated_uninit_tx(spec()?).await?;
+    let uninit_address = uninit.payload_uninit_mut().as_ptr().cast::<u8>();
+    drop(transport);
+    assert_eq!(initialized.payload(), b"retained");
+    assert_eq!(initialized.payload().as_ptr(), initialized_address);
+    for (slot, byte) in uninit.payload_uninit_mut().iter_mut().zip(b"retained") {
+        slot.write(*byte);
+    }
+    // SAFETY: all eight bytes in the uninitialized payload were written above.
+    let initialized = unsafe { uninit.assume_payload_initialized() };
+    assert_eq!(initialized.payload(), b"retained");
+    assert_eq!(initialized.payload().as_ptr(), uninit_address);
+    Ok(())
+}
+
+struct RetainedFrameSender(mpsc::UnboundedSender<NativePrefixRx<ProtobufWire>>);
+
+#[async_trait]
+impl UZeroCopyListener<NativePrefixRx<ProtobufWire>> for RetainedFrameSender {
+    async fn on_receive_zero_copy(&self, frame: NativePrefixRx<ProtobufWire>) {
+        self.0.send(frame).expect("retained-frame receiver");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn listener_lease_retains_native_storage_after_unregister_and_drop() -> Result<(), TestError>
+{
+    let authority = format!("zenoh-listener-owner-{}", std::process::id());
+    let transport = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let source = topic_for(&authority, 0x9401);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let listener = Arc::new(RetainedFrameSender(tx));
+    transport
+        .register_validated_zero_copy_listener(&source, None, listener.clone())
+        .await?;
+    let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
+    let mut tx = transport
+        .loan_validated_tx(UTxLoanSpec::payload(metadata.clone(), 8, 8)?)
+        .await?;
+    tx.payload_mut().copy_from_slice(b"retained");
+    transport.send_validated_zero_copy(tx).await?;
+    let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await?
+        .expect("native lease");
+    let address = frame.try_contiguous_payload().unwrap().as_ptr();
+    transport
+        .unregister_validated_zero_copy_listener(&source, None, listener)
+        .await?;
+    drop(transport);
+    assert_eq!(frame.metadata(), &metadata);
+    assert_eq!(frame.try_contiguous_payload(), Some(b"retained".as_slice()));
+    assert_eq!(frame.try_contiguous_payload().unwrap().as_ptr(), address);
+    assert_eq!(
+        frame.raw().loaned_contiguous_payload()?.provenance(),
+        PayloadLoanProvenance::OpaqueTransportLoan
+    );
     Ok(())
 }
 

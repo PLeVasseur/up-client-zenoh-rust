@@ -35,13 +35,14 @@ use zenoh::{
     Wait,
 };
 
+use crate::listener_activity::ListenerActivity;
 use crate::mechanics::ZenohWireMechanics;
 
 type ZeroCopySubscriberMap = Arc<
     tokio::sync::Mutex<
         std::collections::HashMap<
             (String, ComparableZeroCopyListener),
-            zenoh::pubsub::Subscriber<()>,
+            (zenoh::pubsub::Subscriber<()>, Arc<ListenerActivity>),
         >,
     >,
 >;
@@ -418,6 +419,8 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         }
 
         let callback_listener = comparable_listener.clone();
+        let activity = Arc::new(ListenerActivity::new());
+        let callback_activity = Arc::clone(&activity);
         let subscriber = self
             .mechanics
             .session()
@@ -436,8 +439,11 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                 }
                 let frame = ZenohRxFrame::new(attachment.clone(), sample);
                 let listener = callback_listener.clone();
+                let activity = Arc::clone(&callback_activity);
                 tokio::spawn(async move {
-                    listener.on_receive_encoded_zero_copy(frame).await;
+                    activity
+                        .dispatch(|| listener.on_receive_encoded_zero_copy(frame))
+                        .await;
                 });
             })
             .await
@@ -447,7 +453,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                     format!("failed to register zero-copy listener: {err}"),
                 )
             })?;
-        listeners.insert((zenoh_key, comparable_listener), subscriber);
+        listeners.insert((zenoh_key, comparable_listener), (subscriber, activity));
         Ok(())
     }
 
@@ -460,7 +466,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         let zenoh_key = self
             .mechanics
             .to_zenoh_key_string(source_filter, sink_filter);
-        let subscriber = self
+        let (subscriber, activity) = self
             .subscriber_map
             .lock()
             .await
@@ -468,6 +474,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
             .ok_or_else(|| {
                 UStatus::fail_with_code(UCode::NotFound, "zero-copy listener not registered")
             })?;
+        activity.stop().await;
         subscriber.undeclare().await.map_err(|err| {
             UStatus::fail_with_code(
                 UCode::Internal,

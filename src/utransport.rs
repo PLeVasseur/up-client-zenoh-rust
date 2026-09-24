@@ -131,6 +131,8 @@ impl UPTransportZenoh {
         }
 
         let query_map = self.query_map.clone();
+        let activity = Arc::new(crate::listener_activity::ListenerActivity::new());
+        let callback_activity = Arc::clone(&activity);
         let callback = move |query: Query| {
             let Some(attachment) = query.attachment() else {
                 warn!("Ignoring Zenoh query without UAttributes attachment");
@@ -165,8 +167,9 @@ impl UPTransportZenoh {
                 .unwrap()
                 .insert(attributes.id().to_string(), query);
             let listener = listener.clone();
+            let activity = Arc::clone(&callback_activity);
             tokio::spawn(async move {
-                listener.on_receive(message).await;
+                activity.dispatch(|| listener.on_receive(message)).await;
             });
         };
 
@@ -184,27 +187,33 @@ impl UPTransportZenoh {
         self.queryable_map
             .lock()
             .unwrap()
-            .insert(map_key, queryable);
+            .insert(map_key, (queryable, activity));
         Ok(())
     }
 
-    fn unregister_request_queryable(
+    async fn unregister_request_queryable(
         &self,
         zenoh_key: &str,
         listener: Arc<dyn UListener>,
     ) -> Result<(), UStatus> {
-        if self
+        let removed = self
             .queryable_map
             .lock()
             .unwrap()
-            .remove(&(zenoh_key.to_string(), ComparableListener::new(listener)))
-            .is_none()
-        {
+            .remove(&(zenoh_key.to_string(), ComparableListener::new(listener)));
+        let Some((queryable, activity)) = removed else {
             return Err(UStatus::fail_with_code(
                 UCode::NotFound,
                 format!("No RPC listener registered for key expression: {zenoh_key}"),
             ));
-        }
+        };
+        activity.stop().await;
+        queryable.undeclare().await.map_err(|error| {
+            UStatus::fail_with_code(
+                UCode::Internal,
+                format!("Unable to undeclare queryable: {error}"),
+            )
+        })?;
         Ok(())
     }
 }
@@ -276,7 +285,8 @@ impl UTransport for UPTransportZenoh {
             .unregister(&zenoh_key, ComparableListener::new(listener.clone()))
             .await?;
         if is_rpc_request_filter(source_filter, sink_filter) {
-            self.unregister_request_queryable(&zenoh_key, listener)?;
+            self.unregister_request_queryable(&zenoh_key, listener)
+                .await?;
         }
         Ok(())
     }

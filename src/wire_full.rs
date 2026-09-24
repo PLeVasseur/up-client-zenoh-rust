@@ -18,6 +18,7 @@ use up_rust::wire_implementer_api::UWire;
 use up_rust::{UCode, UStatus, UUri};
 use zenoh::{bytes::ZBytes, sample::Sample};
 
+use crate::listener_activity::ListenerActivity;
 use crate::mechanics::ZenohWireMechanics;
 
 /// Real Zenoh owned-frame selected-wire core for benchmark/support paths.
@@ -64,6 +65,7 @@ struct OwnedListenerRegistration {
     owned_listener: Arc<dyn UEncodedOwnedListener>,
     zenoh_listener: ComparableOwnedListener,
     subscriber: zenoh::pubsub::Subscriber<()>,
+    activity: Arc<ListenerActivity>,
 }
 
 #[derive(Clone)]
@@ -161,6 +163,8 @@ impl UOwnedTransportCore for ZenohOwnedCore {
             .to_zenoh_key_string(source_filter, sink_filter);
         let comparable = ComparableOwnedListener::new(listener.clone());
         let callback_listener = comparable.clone();
+        let activity = Arc::new(ListenerActivity::new());
+        let callback_activity = Arc::clone(&activity);
         let subscriber = self
             .mechanics
             .session()
@@ -170,8 +174,11 @@ impl UOwnedTransportCore for ZenohOwnedCore {
                     return;
                 };
                 let listener = callback_listener.clone();
+                let activity = Arc::clone(&callback_activity);
                 tokio::spawn(async move {
-                    listener.on_receive_encoded_owned(frame).await;
+                    activity
+                        .dispatch(|| listener.on_receive_encoded_owned(frame))
+                        .await;
                 });
             })
             .await
@@ -188,6 +195,7 @@ impl UOwnedTransportCore for ZenohOwnedCore {
             owned_listener: listener,
             zenoh_listener: comparable,
             subscriber,
+            activity,
         });
         Ok(())
     }
@@ -212,6 +220,7 @@ impl UOwnedTransportCore for ZenohOwnedCore {
             };
             listeners.remove(index)
         };
+        registration.activity.stop().await;
         drop(registration.zenoh_listener);
         registration.subscriber.undeclare().await.map_err(|err| {
             UStatus::fail_with_code(

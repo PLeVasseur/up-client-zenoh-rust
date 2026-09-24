@@ -10,6 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
+mod listener_activity;
 mod listener_registry;
 mod mechanics;
 pub mod rpc;
@@ -47,7 +48,14 @@ use zenoh::{
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
 
-type QueryableMap = Arc<Mutex<HashMap<(String, ComparableListener), Queryable<()>>>>;
+type QueryableMap = Arc<
+    Mutex<
+        HashMap<
+            (String, ComparableListener),
+            (Queryable<()>, Arc<listener_activity::ListenerActivity>),
+        >,
+    >,
+>;
 type QueryMap = Arc<Mutex<HashMap<String, Query>>>;
 pub struct UPTransportZenoh {
     session: Arc<Session>,

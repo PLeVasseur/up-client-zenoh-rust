@@ -13,6 +13,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::listener_activity::ListenerActivity;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::{debug, enabled, info, warn, Level};
@@ -46,7 +47,8 @@ fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes>
 }
 
 // mapping of (Zenoh Key expression, Message Listener) ->  Zenoh Subscriber
-type SubscriberMap = Mutex<HashMap<(String, ComparableListener), Subscriber<()>>>;
+type SubscriberMap =
+    Mutex<HashMap<(String, ComparableListener), (Subscriber<()>, Arc<ListenerActivity>)>>;
 
 pub(crate) struct ListenerRegistry {
     subscribers: SubscriberMap,
@@ -96,6 +98,8 @@ impl ListenerRegistry {
         }
 
         let listener_to_invoke_in_callback = comparable_listener.clone();
+        let activity = Arc::new(ListenerActivity::new());
+        let callback_activity = Arc::clone(&activity);
 
         // Setup callback
         let callback = move |sample: Sample| {
@@ -129,6 +133,7 @@ impl ListenerRegistry {
                     warn!("Unable to create UMessage from Zenoh sample");
                     return;
                 };
+                let activity = Arc::clone(&callback_activity);
                 // Note that we are invoking the listener in a dedicated task
                 // to avoid blocking the Zenoh callback thread
                 // while still using Zenoh's underlying tokio runtime.
@@ -139,7 +144,7 @@ impl ListenerRegistry {
                 // `UListener` decide how to handle incoming messages and use
                 // a custom tokio runtime configuration.
                 tokio::spawn(async move {
-                    listener_cloned.on_receive(msg).await;
+                    activity.dispatch(|| listener_cloned.on_receive(msg)).await;
                 });
             } else if enabled!(Level::DEBUG) {
                 let id = attributes.id();
@@ -165,7 +170,7 @@ impl ListenerRegistry {
             Ok(subscriber) => {
                 // [impl->dsn~utransport-registerlistener-number-of-listeners~1]
                 // [impl->dsn~utransport-registerlistener-listener-reuse~1]
-                locked_subscribers.insert((zenoh_key, comparable_listener), subscriber);
+                locked_subscribers.insert((zenoh_key, comparable_listener), (subscriber, activity));
                 Ok(())
             }
             Err(e) => {
@@ -181,23 +186,28 @@ impl ListenerRegistry {
         key_expr: &str,
         listener: ComparableListener,
     ) -> Result<(), UStatus> {
-        // the callback registered with the Zenoh Subscriber will stop receiving messages
-        // once it goes out of scope, so we can simply remove it from the map to stop
-        // having the listener being invoked
+        // Undeclaring the native subscriber alone does not cancel tasks already
+        // queued by its callback. Close admission before returning success.
         // [impl->dsn~utransport-unregisterlistener-stop-invoking-listeners~1]
-        if self
+        let Some((subscriber, activity)) = self
             .subscribers
             .lock()
             .await
             .remove(&(key_expr.to_string(), listener.clone()))
-            .is_none()
-        {
+        else {
             // [impl->dsn~utransport-unregisterlistener-error-notfound~1]
             return Err(UStatus::fail_with_code(
                 UCode::NotFound,
                 format!("No such listener registered for key expression: {key_expr}"),
             ));
-        }
+        };
+        activity.stop().await;
+        subscriber.undeclare().await.map_err(|error| {
+            UStatus::fail_with_code(
+                UCode::Internal,
+                format!("Failed to undeclare subscriber: {error}"),
+            )
+        })?;
         Ok(())
     }
 }
