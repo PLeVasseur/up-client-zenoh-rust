@@ -1,10 +1,8 @@
-# Rust based Eclipse Zenoh&trade; Transport Library for Eclipse uProtocol&trade;
+# up-transport-zenoh-rust
 
 This crate implements the Zenoh transport as specified in [uProtocol v1.6.0-alpha.7](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/zenoh.adoc).
 
-## Getting started
-
-### Building the Library
+## Build
 
 ```shell
 # Check clippy
@@ -17,35 +15,26 @@ cargo test
 cargo tarpaulin -o lcov -o html --output-dir target/tarpaulin
 ```
 
-### Running the Examples
+## Examples
 
-The [examples](examples) folder contains sample code illustrating how the crate can be used for the different message exchange patterns supported by uProtocol.
-Assume you're using debug build.[^1]
+The examples of up-transport-zenoh-rust can be found under examples folder.
 
 ```shell
 # Publisher
-./target/debug/examples/publisher
+cargo run --example publisher
 # Subscriber
-./target/debug/examples/subscriber
-# Notifier
-./target/debug/examples/notifier
-# Notification Receiver
-./target/debug/examples/notification_receiver
+cargo run --example subscriber
 # RPC Server
-./target/debug/examples/rpc_server
+cargo run --example rpc_server
 # RPC Client
-./target/debug/examples/rpc_client
-# L2 RPC Client
-./target/debug/examples/l2_rpc_client
+cargo run --example rpc_client
 ```
 
-For the advanced Zenoh configuration, you can either use `-h` to see more details or pass the configuration file with `-c`.
-The example configuration file is located in the [config folder](config).
+## Note
 
-## Using the Library
+The implementation follows the spec defined in [up-l1/zenoh](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-l1/zenoh.adoc).
 
-Most developers will want to create an instance of the *UPTransportZenoh* struct and use it with the Communication Level API and its default implementation which are provided by the *up-rust* library.
-
+## Usage
 Both libraries need to be added as dependencies to your crate, e.g. using the following commands:
 
 ```sh
@@ -142,3 +131,7 @@ Please refer to the [Releases on GitHub](https://github.com/eclipse-uprotocol/up
 
 [^1]: Some PC configurations cannot connect locally. Add multicast to `lo` interface using
   ` $ sudo ip link set dev lo multicast on `
+
+## Feature-Gated Owned Support
+
+`ZenohOwnedCore` is available only with `--features benchmark-owned`. It is a disabled-by-default owned-frame support path for benchmark/support measurements and selected-wire owned tests; it is not zero-copy evidence and is not part of the default transport API.

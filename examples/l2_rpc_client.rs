@@ -10,71 +10,52 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
-
-/*!
-This example illustrates how uProtocol's Communication Layer API can be used to perform
-an RPC using the Zenoh transport.
-
-In order to successfully run this example, the `rpc_server` example needs to be started
-first.
-*/
-
 mod common;
 
 use std::{str::FromStr, sync::Arc};
 use up_rust::{
-    communication::{CallOptions, InMemoryRpcClient, RpcClient, UPayload},
-    LocalUriProvider, StaticUriProvider, UPayloadFormat, UPriority, UUri, UUID,
+    communication::{CallOptions, RpcClient, UPayload},
+    LocalUriProvider, PayloadEncoding, UPriority, UUri, UUID,
 };
-use up_transport_zenoh::UPTransportZenoh;
+use up_transport_zenoh::{UPTransportZenoh, ZenohRpcClient};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     // initiate logging
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol RPC client example");
-    let uri_provider = Arc::new(StaticUriProvider::new("l2_rpc_client", 0x10_ab10, 1));
-    let transport = UPTransportZenoh::builder(uri_provider.get_authority())
-        .expect("invalid authority name")
-        .with_config(common::get_zenoh_config())
-        .build()
-        .await
-        .map(Arc::new)?;
-    let rpc_client = InMemoryRpcClient::new(transport, uri_provider.clone())
-        .await
-        .map(Arc::new)?;
+    let zenoh_transport = Arc::new(
+        UPTransportZenoh::new(common::get_zenoh_config(), "//rpc_client/1/1/0")
+            .await
+            .unwrap(),
+    );
+    let rpc_client = Arc::new(ZenohRpcClient::new(zenoh_transport.clone()));
 
-    let operation_uuri = UUri::from_str("//rpc_server/AAA/1/6A10")?;
+    let sink_uuri = UUri::from_str("//rpc_server/1/1/1").unwrap();
 
-    // create and send request
-    let payload = UPayload::new("GetCurrentTime", UPayloadFormat::UPAYLOAD_FORMAT_TEXT);
+    // create uPayload and send request
+    let data = String::from("GetCurrentTime");
+    let payload = UPayload::new(data, PayloadEncoding::TEXT);
     let call_options = CallOptions::for_rpc_request(
         5_000,
         Some(UUID::build()),
         Some("my_token".to_string()),
-        Some(UPriority::UPRIORITY_CS6),
+        Some(UPriority::CS6),
     );
     println!(
-        "Sending request [source: {}, sink: {}]",
-        uri_provider.get_source_uri().to_uri(false),
-        operation_uuri.to_uri(false)
+        "Sending request from {} to {}",
+        zenoh_transport.get_source_uri(),
+        sink_uuri
     );
-
-    match rpc_client
-        .invoke_method(operation_uuri, call_options, Some(payload))
+    let result = rpc_client
+        .invoke_method(sink_uuri, call_options, Some(payload))
         .await
-    {
-        Err(_) => {
-            println!("Failed to receive reply from service");
-        }
-        Ok(Some(payload)) => {
-            let value = String::from_utf8(payload.payload().to_vec())?;
-            println!("Received reply [payload: {value}]");
-        }
-        _ => {
-            println!("Reply did not contain payload");
-        }
-    }
-    Ok(())
+        .unwrap();
+
+    // process the result
+    let result_payload = result.unwrap();
+    let payload = result_payload.payload();
+    let value = payload.into_iter().map(|c| *c as char).collect::<String>();
+    println!("Receive {value}");
 }

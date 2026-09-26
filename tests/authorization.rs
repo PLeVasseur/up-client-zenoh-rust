@@ -232,10 +232,7 @@ async fn test_send_message_to_peer(msg: UMessage, credentials: &str) -> bool {
         .insert_json5("transport/auth", credentials)
         .expect("failed to set auth config");
 
-    let client_transport = UPTransportZenoh::builder("client")
-        .expect("Failed to create transport builder")
-        .with_config(client_config)
-        .build()
+    let client_transport = UPTransportZenoh::new(client_config, "//client/BBBB/1/0")
         .await
         .expect("Failed to create transport");
 
@@ -283,13 +280,11 @@ async fn test_subscribe_for_messages_from_peer(sink_filter_uri: &str, credential
     service_provider_config
         .insert_json5("transport/auth", credentials)
         .expect("failed to set auth config");
-    let service_provider_transport = UPTransportZenoh::builder("service_provider")
-        .expect("Failed to create service provider transport builder")
-        .with_config(service_provider_config)
-        .build()
-        .await
-        .map(Arc::new)
-        .expect("Failed to create service provider transport");
+    let service_provider_transport =
+        UPTransportZenoh::new(service_provider_config, "//service_provider/ABCD/1/0")
+            .await
+            .map(Arc::new)
+            .expect("Failed to create service provider transport");
 
     service_provider_transport
         .register_listener(&UUri::any(), Some(&sink_filter), rpc_request_listener)

@@ -10,84 +10,65 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
-
-/*!
-This example illustrates how uProtocol's Transport Layer API can be used to perform
-an RPC using the Zenoh transport.
-
-In order to successfully run this example, the `rpc_server` example needs to be started
-first.
-*/
-
 mod common;
 
 use async_trait::async_trait;
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc};
 use tokio::sync::Notify;
 use up_rust::{
-    LocalUriProvider, StaticUriProvider, UListener, UMessage, UMessageBuilder, UPayloadFormat,
-    UTransport, UUri,
+    LocalUriProvider, PayloadEncoding, UListener, UMessage, UMessageBuilder, UTransport, UUri,
 };
 use up_transport_zenoh::UPTransportZenoh;
 
-const REQUEST_TTL: u32 = 1000;
-
 // ResponseListener
-struct ResponseListener(Arc<Notify>);
-
+struct ResponseListener {
+    notify: Arc<Notify>,
+}
+impl ResponseListener {
+    fn new(notify: Arc<Notify>) -> Self {
+        Self { notify }
+    }
+}
 #[async_trait]
 impl UListener for ResponseListener {
     async fn on_receive(&self, msg: UMessage) {
-        let payload = msg.payload.unwrap();
-        let value = String::from_utf8(payload.to_vec()).unwrap();
-        let uri = msg.attributes.unwrap().source.unwrap().to_uri(false);
-        println!("Received RPC response [from: {uri}, payload: {value}]");
-        self.0.notify_one();
+        let payload = msg.payload().expect("payload").to_vec();
+        let value = payload.into_iter().map(|c| c as char).collect::<String>();
+        let uri = msg.attributes().source().to_string();
+        println!("Receiving response {value} from {uri}");
+        self.notify.notify_one();
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     // initiate logging
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol RPC client example");
-    let uri_provider = StaticUriProvider::new("l1_rpc_client", 0xdd00, 2);
-    let transport = UPTransportZenoh::builder(uri_provider.get_authority())
-        .expect("invalid authority name")
-        .with_config(common::get_zenoh_config())
-        .build()
-        .await?;
+    let rpc_client = UPTransportZenoh::new(common::get_zenoh_config(), "//rpc_client/1/1/0")
+        .await
+        .unwrap();
 
     // create uuri
-    let operation_uuri = UUri::from_str("//rpc_server/AAA/1/6A10")?;
-    let reply_to_uuri = uri_provider.get_source_uri();
+    let src_uuri = rpc_client.get_source_uri();
+    let sink_uuri = UUri::from_str("//rpc_server/1/1/1").unwrap();
 
     // register response callback
     let notify = Arc::new(Notify::new());
-    let resp_listener = Arc::new(ResponseListener(notify.clone()));
-    transport
-        .register_listener(&operation_uuri, Some(&reply_to_uuri), resp_listener.clone())
-        .await?;
+    let resp_listener = Arc::new(ResponseListener::new(notify.clone()));
+    rpc_client
+        .register_listener(&sink_uuri, Some(&src_uuri), resp_listener.clone())
+        .await
+        .unwrap();
 
-    // create and send request message
-    let request_message =
-        UMessageBuilder::request(operation_uuri.clone(), reply_to_uuri.clone(), REQUEST_TTL)
-            .build_with_payload("GetCurrentTime", UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
-    println!(
-        "Sending RPC request [from: {}, to: {}]",
-        reply_to_uuri.to_uri(false),
-        operation_uuri.to_uri(false)
-    );
-    transport.send(request_message).await?;
+    // create uPayload and send request
+    let data = String::from("GetCurrentTime");
+    let umsg = UMessageBuilder::request(sink_uuri.clone(), src_uuri.clone(), 1000)
+        .build_with_payload(data, PayloadEncoding::TEXT)
+        .unwrap();
+    println!("Sending request from {src_uuri} to {sink_uuri}");
+    rpc_client.send(umsg).await.unwrap();
 
-    tokio::time::timeout(
-        Duration::from_millis(u64::from(REQUEST_TTL * 2)),
-        notify.notified(),
-    )
-    .await
-    .map_err(|e| {
-        println!("Failed to receive reply from service in time");
-        Box::from(e)
-    })
+    notify.notified().await;
 }
