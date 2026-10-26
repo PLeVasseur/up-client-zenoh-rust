@@ -55,6 +55,11 @@ perf-diagnostics = [
 ]
 zero-copy = ["zenoh/shared-memory", "zenoh/unstable"]
 
+[[bench]]
+name = "transport_criterion"
+harness = false
+required-features = ["zero-copy", "benchmark-owned", "payload-contract-benchmarks"]
+
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
@@ -91,6 +96,10 @@ tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-th
 tracing-subscriber = "0.3.23"
 up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "cae0c55d19098a498ac6629d94c4cbcede66caae", default-features = false, features = ["communication", "test-util"] }
 up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "71e1b320056854e1fb480ed0b8b9340a1de74ab0" }
+
+[[test]]
+name = "zero_copy_transport"
+required-features = ["zero-copy"]
 
 [[test]]
 name = "zenoh_owned_wire"

@@ -7,18 +7,31 @@
 use std::str::FromStr;
 
 #[cfg(feature = "zero-copy")]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::error;
 use up_rust::{UCode, UPriority, UStatus, UUri};
 use zenoh::qos::Priority;
 #[cfg(feature = "zero-copy")]
-use zenoh::Session;
+use zenoh::{
+    shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
+    Session, Wait,
+};
+
+#[cfg(feature = "zero-copy")]
+type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
+#[cfg(feature = "zero-copy")]
+type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
+
+#[cfg(feature = "zero-copy")]
+const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 #[cfg(feature = "zero-copy")]
 pub(crate) struct ZenohWireMechanics {
     session: Arc<Session>,
     uri: UUri,
+    shm_segment_size: usize,
+    shm_provider: Arc<OnceLock<ZenohShmProviderInit>>,
 }
 
 #[cfg(feature = "zero-copy")]
@@ -40,6 +53,8 @@ impl ZenohWireMechanics {
         Ok(Self {
             session: Arc::new(session),
             uri,
+            shm_segment_size: DEFAULT_SHM_SEGMENT_SIZE,
+            shm_provider: Arc::new(OnceLock::new()),
         })
     }
 
@@ -49,6 +64,34 @@ impl ZenohWireMechanics {
 
     pub(crate) fn to_zenoh_key_string(&self, src_uri: &UUri, dst_uri: Option<&UUri>) -> String {
         to_zenoh_key_string(&self.uri, src_uri, dst_uri)
+    }
+
+    pub(crate) fn set_shm_segment_size(&mut self, shm_segment_size: usize) -> Result<(), UStatus> {
+        if shm_segment_size == 0 {
+            return Err(UStatus::fail_with_code(
+                UCode::InvalidArgument,
+                "Zenoh SHM segment size must be non-zero",
+            ));
+        }
+        self.shm_segment_size = shm_segment_size;
+        Ok(())
+    }
+
+    pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
+        self.shm_provider
+            .get_or_init(|| {
+                ShmProviderBuilder::default_backend(self.shm_segment_size)
+                    .wait()
+                    .map(Arc::new)
+                    .map_err(|err| err.to_string())
+            })
+            .clone()
+            .map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::Internal,
+                    format!("failed to initialize Zenoh SHM provider: {err}"),
+                )
+            })
     }
 }
 

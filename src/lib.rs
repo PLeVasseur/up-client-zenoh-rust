@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
-//! Classic message and selected-wire owned-frame transport bindings over Zenoh.
+//! uProtocol message, owned-frame and shared-memory transport bindings over Zenoh.
 //!
 //! Each configured transport retains its session and registration lifecycle;
 //! selected-wire adapters provide SDK identity validation above physical carriage.
@@ -25,10 +25,16 @@ pub mod utransport;
 /// Owned selected-wire frame carriage and its transport core.
 #[cfg(feature = "benchmark-owned")]
 pub mod wire_full;
+#[cfg(feature = "zero-copy")]
+mod zero_copy;
 
 pub use rpc::ZenohRpcClient;
 #[cfg(feature = "benchmark-owned")]
 pub use wire_full::ZenohOwnedCore;
+#[cfg(feature = "zero-copy")]
+pub use zero_copy::{
+    ZenohRxFrame, ZenohTxBuffer, ZenohUninitTxBuffer, ZenohZeroCopyCore, ZenohZeroCopyCoreBuilder,
+};
 
 use listener_registry::ListenerRegistry;
 use std::{
