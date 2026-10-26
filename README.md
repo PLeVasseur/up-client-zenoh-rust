@@ -9,6 +9,9 @@ classic `UPTransportZenoh` registry retains its existing contract.
 
 ## Build
 
+The [benchmark guide](docs/benchmarks.md) documents the Criterion wrapper,
+full-loop versus component selectors and the blocked aggregate-comparison result.
+
 Public items and targets use `missing_docs = "deny"`. See the
 [public API guide](docs/api-contract.md) for builder, RPC and retained-buffer
 contracts, with links to this binding's placement and lifecycle guides.

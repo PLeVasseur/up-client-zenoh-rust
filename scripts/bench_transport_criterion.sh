@@ -30,8 +30,8 @@ usage() {
     cat <<'USAGE'
 Usage:
   scripts/bench_transport_criterion.sh baseline
-  scripts/bench_transport_criterion.sh candidate <phase_candidate>
-  scripts/bench_transport_criterion.sh guardrail <phase_candidate> <report_path>
+   scripts/bench_transport_criterion.sh candidate <candidate>
+   scripts/bench_transport_criterion.sh guardrail <candidate> <report_path>
   scripts/bench_transport_criterion.sh export
 
 Environment:
@@ -47,7 +47,7 @@ Environment:
                               zc-payload-init-only, or zc-rx-no-validation.
                               Default: full-loop
   TRANSPORT_BENCH_CASE_FILTER Optional comma-separated fixture-name filter.
-  CRITERION_ARGS              Criterion args. Default matches USR-10B1 C1.
+   CRITERION_ARGS              Criterion args. Default: 10 samples, 1s warm-up, 2s measurement.
   BENCH_PIN_PREFIX            Optional command prefix for CPU pinning, etc.
   CARGO_BIN                   Cargo command. Default: cargo
 USAGE
@@ -123,7 +123,7 @@ write_summary() {
     read -r -a cargo_parts <<<"$CARGO_BIN"
 
     cat >"$summary" <<SUMMARY
-# Zenoh Userializer Payload-Contract Representative Benchmarks
+# Zenoh Payload-Contract Benchmarks
 
 ## Command
 
@@ -134,7 +134,6 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 ## Environment
 
 - Transport: Zenoh
-- Phase: USR-10B1X
 - Git head: \`$(git_value rev-parse HEAD)\`
 - Git branch: \`$(git_value branch --show-current)\`
 - Default Rust: \`$(rustc --version)\`
@@ -159,7 +158,7 @@ TRANSPORT_BENCH_SUITE=$TRANSPORT_BENCH_SUITE TRANSPORT_BENCH_PROFILE=$TRANSPORT_
 
 ## Claim Boundary
 
-This script is the USR-10B1X authority wrapper for the Zenoh selected-wire and owned-core full-loop command shape. Non-\`full-loop\` diagnostic selectors added by USR-10P15Z are support-only attribution rows and cannot satisfy authority closure or performance claims. It writes artifacts only under the caller-selected report directory. The generated guardrail is a blocker marker, not aggregate USR-10 guard authority.
+Full-loop selectors measure selected-wire and owned-core transport paths. Other selectors isolate component costs and cannot establish full-loop performance. Artifacts are written under the selected report directory. Aggregate guardrail comparison is not implemented; generated guardrail results remain blocked.
 SUMMARY
 }
 
@@ -178,7 +177,7 @@ export_results() {
     fi
 
     cat >"$report_dir/guardrail.json" <<JSON
-    {"status":"blocked","phase":"USR-10B1X","reason":"real aggregate Zenoh guard comparison is not implemented in this branch"}
+    {"status":"blocked","suite":"zenoh-payload-contract","reason":"aggregate Zenoh guard comparison is not implemented"}
 JSON
 
     write_summary "$report_dir" "$raw_output"
@@ -212,7 +211,7 @@ case "$subcommand" in
         fi
         mkdir -p "$(dirname "$2")"
         cat >"$2" <<JSON
-{"status":"blocked","phase":"USR-10B1X","candidate":"$1","reason":"real aggregate Zenoh guard comparison is not implemented in this branch"}
+{"status":"blocked","suite":"zenoh-payload-contract","candidate":"$1","reason":"aggregate Zenoh guard comparison is not implemented"}
 JSON
         ;;
     export)
