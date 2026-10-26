@@ -33,9 +33,9 @@ impl UListener for NotificationListener {
         // Offload processing of the message to a dedicated tokio runtime using
         // threads not used by Zenoh.
         self.0.spawn(async move {
-            let payload = msg.payload.unwrap();
+            let payload = msg.payload().unwrap();
             let value = String::from_utf8(payload.to_vec()).unwrap();
-            let uri = msg.attributes.unwrap().source.unwrap().to_uri(false);
+            let uri = msg.source().to_uri(false);
             println!("Received notification [source: {uri}, payload: {value}]");
         });
     }
@@ -47,12 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol notification receiver example");
-    let uri_provider = StaticUriProvider::new("receiver", 0x10_ab10, 1);
-    let transport = UPTransportZenoh::builder(uri_provider.get_authority())
-        .expect("invalid authority name")
-        .with_config(common::get_zenoh_config())
-        .build()
-        .await?;
+    let uri_provider = StaticUriProvider::new("receiver", 0x10_ab10, 1)?;
+    let transport =
+        UPTransportZenoh::new(common::get_zenoh_config(), uri_provider.get_authority()).await?;
 
     let source_filter = UUri::from_str("//*/FFFFA1B2/1/8001")?;
     let sink_filter = uri_provider.get_source_uri();

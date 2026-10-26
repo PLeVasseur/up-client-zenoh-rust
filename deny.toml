@@ -25,6 +25,7 @@ allow = [
     "EPL-2.0",
     "ISC",
     "MIT",
+    "MIT-0", # borrow-or-share, used by the SDK's fluent-uri parser
     "MPL-2.0",
     "OpenSSL",
     # Unicode-3.0 is not (yet) on the Eclipse Foundation's list of approved licenses
@@ -51,4 +52,12 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "The paste crate is no longer maintained; we accept this risk for the time being, until zenoh has replaced it with something else" },
     { id = "RUSTSEC-2025-0134", reason = "Zenoh needs to remove its dependency on rustl_pemfile; however, based on the RUSTSEC description, there should be no imminent risk involved in the short term" },
     { id = "RUSTSEC-2026-0041", reason = "The lz4_flex crate is used by Zenoh for compressing data that is transmitted via the network. However, this is an optional feature that needs to be enabled explicitly by clients. This transport does not itself enable compression and logs warning messages if a client enables it." },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+    "https://github.com/PLeVasseur/up-rust.git",
+    "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git",
 ]

@@ -24,7 +24,7 @@ mod common;
 use std::str::FromStr;
 
 use up_rust::{
-    LocalUriProvider, StaticUriProvider, UMessageBuilder, UPayloadFormat, UTransport, UUri,
+    LocalUriProvider, PayloadEncoding, StaticUriProvider, UMessageBuilder, UTransport, UUri,
 };
 use up_transport_zenoh::UPTransportZenoh;
 
@@ -34,12 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol notifier example");
-    let uri_provider = StaticUriProvider::new("notification", 0xa1b2, 1);
-    let transport = UPTransportZenoh::builder(uri_provider.get_authority())
-        .expect("invalid authority name")
-        .with_config(common::get_zenoh_config())
-        .build()
-        .await?;
+    let uri_provider = StaticUriProvider::new("notification", 0xa1b2, 1)?;
+    let transport =
+        UPTransportZenoh::new(common::get_zenoh_config(), uri_provider.get_authority()).await?;
 
     // create uuri
     let source_uuri = uri_provider.get_resource_uri(0x8001);
@@ -53,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sink_uuri.to_uri(false)
         );
         let umessage = UMessageBuilder::notification(source_uuri.clone(), sink_uuri.clone())
-            .build_with_payload(data, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+            .build_with_payload(data, PayloadEncoding::TEXT)?;
         transport.send(umessage).await?;
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
     }
