@@ -139,6 +139,12 @@ impl UPTransportZenoh {
             {
                 return;
             }
+            if attributes.payload_encoding().is_none()
+                && query.payload().is_some_and(|payload| !payload.is_empty())
+            {
+                warn!("Ignoring Zenoh query with undeclared payload bytes");
+                return;
+            }
             let message = match message_from_parts(
                 &attributes,
                 attributes.payload_encoding().and_then(|_| {
@@ -235,5 +241,131 @@ impl UTransport for UPTransportZenoh {
         self.subscribers
             .unregister(&zenoh_key, ComparableListener::new(listener))
             .await
+    }
+}
+
+#[cfg(test)]
+mod malformed_presence_tests {
+    use super::*;
+    use std::time::Duration;
+    use test_case::test_case;
+    use up_rust::{PayloadEncoding, UMessageBuilder};
+
+    struct Observe(tokio::sync::mpsc::UnboundedSender<UMessage>);
+    #[async_trait]
+    impl UListener for Observe {
+        async fn on_receive(&self, message: UMessage) {
+            self.0.send(message).unwrap();
+        }
+    }
+
+    fn make_message(query: bool, source: &UUri, method: &UUri, payload: Option<Bytes>) -> UMessage {
+        if query {
+            let mut builder = UMessageBuilder::request(method.clone(), source.clone(), 10_000);
+            match payload {
+                None => builder.build(),
+                Some(bytes) => builder.build_with_payload(bytes, PayloadEncoding::RAW),
+            }
+        } else {
+            let mut builder = UMessageBuilder::publish(source.clone());
+            match payload {
+                None => builder.build(),
+                Some(bytes) => builder.build_with_payload(bytes, PayloadEncoding::RAW),
+            }
+        }
+        .unwrap()
+    }
+
+    #[test_case(false; "native classic subscriber")]
+    #[test_case(true; "native classic request queryable")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nonempty_bytes_without_encoding_are_rejected(query: bool) {
+        let mut config = crate::zenoh_config::Config::default();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config
+            .insert_json5("scouting/gossip/enabled", "false")
+            .unwrap();
+        let transport = UPTransportZenoh::builder("presence-regression")
+            .unwrap()
+            .with_session(zenoh::open(config).await.unwrap())
+            .build()
+            .unwrap();
+        let source =
+            UUri::try_from_parts("presence-source", 0x4321, 1, if query { 0 } else { 0x8001 })
+                .unwrap();
+        let method = UUri::try_from_parts("presence-service", 0x1234, 1, 1).unwrap();
+        let sink = query.then_some(&method);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let listener: Arc<dyn UListener> = Arc::new(Observe(sender));
+        transport
+            .register_listener(&source, sink, Arc::clone(&listener))
+            .await
+            .unwrap();
+        let key = transport.to_zenoh_key_string(&source, sink);
+        let make = |payload| make_message(query, &source, &method, payload);
+        let malformed = make(None);
+        let absent = make(None);
+        let empty = make(Some(Bytes::new()));
+        let opaque = make(Some(Bytes::from_static(b"opaque")))
+            .with_declared_payload_encoding(PayloadEncoding::from_id(0xFFFF).unwrap())
+            .unwrap();
+        // Native controls prove the listener path is active; malformed metadata
+        // must never be transformed into a delivered payloadless message.
+        for (message, bytes) in [
+            (&malformed, &b"undeclared"[..]),
+            (&absent, &b""[..]),
+            (&empty, &b""[..]),
+            (&opaque, &b"opaque"[..]),
+        ] {
+            let attachment =
+                UPTransportZenoh::uattributes_to_attachment(message.attributes()).unwrap();
+            if query {
+                use zenoh::Wait;
+                transport
+                    .session
+                    .get(&key)
+                    .payload(bytes.to_vec())
+                    .attachment(attachment)
+                    .callback(|_| {})
+                    .wait()
+                    .unwrap();
+            } else {
+                transport
+                    .session
+                    .put(&key, bytes.to_vec())
+                    .attachment(attachment)
+                    .await
+                    .unwrap();
+            }
+        }
+        let mut delivered = Vec::new();
+        for _ in 0..3 {
+            delivered.push(
+                tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        for expected in [&absent, &empty, &opaque] {
+            let actual = delivered
+                .iter()
+                .find(|message| message.id() == expected.id())
+                .expect("each valid native control must arrive");
+            assert_eq!(actual.payload_encoding(), expected.payload_encoding());
+            assert_eq!(actual.payload(), expected.payload());
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), receiver.recv())
+                .await
+                .is_err()
+        );
+        transport
+            .unregister_listener(&source, sink, listener)
+            .await
+            .unwrap();
     }
 }

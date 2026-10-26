@@ -66,6 +66,10 @@ fn dispatch_sample(dispatch: &Dispatch<MessageDelivery>, sample: Sample) {
             return;
         }
     };
+    if attributes.payload_encoding().is_none() && !sample.payload().is_empty() {
+        warn!("Ignoring Zenoh sample with undeclared payload bytes");
+        return;
+    }
     // [impl->dsn~up-attributes-ttl~1]
     // [impl->dsn~up-attributes-ttl-timeout~1]
     if attributes.check_expired().is_ok() {
