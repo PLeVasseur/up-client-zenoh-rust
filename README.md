@@ -199,3 +199,5 @@ Its one-shot reply slot accepts the first native response without blocking and
 discards duplicate responses.
 Dynamic SHM
 sinks account for entered native callbacks when waiting for quiescence.
+
+Receiver-only prepared reservations avoid unused native publisher pools. See [Receiver-only physical reservations](docs/prepared.md#receiver-only-physical-reservations).

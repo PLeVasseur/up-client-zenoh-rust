@@ -87,7 +87,8 @@ pub struct ZenohRouteReservation {
 
 /// Finite setup capacities for a prepared native Zenoh core.
 pub struct ZenohPreparedConfig {
-    /// Size of the actual POSIX SHM provider, initialized before traffic.
+    /// Configured POSIX SHM capacity, initialized before traffic for TX catalogs.
+    /// An entirely receive-only catalog reserves no local provider.
     pub shm_segment_size: usize,
     /// Maximum simultaneously prepared logical SDK routes.
     pub route_capacity: usize,
@@ -113,7 +114,7 @@ struct Endpoint {
 }
 struct Inner {
     mechanics: ZenohWireMechanics,
-    provider: Arc<ZenohShmProvider>,
+    provider: Option<Arc<ZenohShmProvider>>,
     endpoints: Box<[Endpoint]>,
     routes: Box<[AtomicBool]>,
     registrations: Box<[AtomicBool]>,
@@ -179,7 +180,8 @@ impl ZenohPreparedCore {
     ///
     /// Seven publishers per TX address preserve every SDK priority without declaring
     /// a publisher per frame. They use native reliable/block congestion semantics.
-    /// Receiver-only entries require no publisher. Attach and optional matching
+    /// Receiver-only entries require no publisher; an entirely receive-only
+    /// catalog also reserves no local SHM provider. Attach and optional matching
     /// waits must finish before admission; unknown first RPC clients are not warmed.
     ///
     /// # Errors
@@ -203,7 +205,8 @@ impl ZenohPreparedCore {
     /// Reserves prepared routes and SHM on an already opened native session.
     ///
     /// The core retains the session; clones may share it with other configured
-    /// endpoints. Each core owns its own SHM provider and finite tables. Closing
+    /// endpoints. Each transmit-capable core owns an eagerly reserved SHM provider;
+    /// a receive-only catalog borrows remote SHM without a local provider. Closing
     /// the shared session makes subsequent native publications fail with Delivery;
     /// it does not revoke retained samples. Finish all reservation before traffic.
     ///
@@ -237,8 +240,14 @@ impl ZenohPreparedCore {
         let routes = table(prepared.route_capacity)?;
         let registrations = table(prepared.registration_capacity)?;
         mechanics.set_shm_segment_size(prepared.shm_segment_size)?;
-        let segment_size = mechanics.prewarm_shm()?;
-        let provider = mechanics.shm_provider()?;
+        // Receiver-only catalogs borrow remote SHM and reserve no unused local pool.
+        let segment_size = prepared.shm_segment_size;
+        let provider = if catalog.iter().any(|entry| entry.transmit) {
+            mechanics.prewarm_shm()?;
+            Some(mechanics.shm_provider()?)
+        } else {
+            None
+        };
         let mut endpoints: Vec<Endpoint> = Vec::new();
         endpoints
             .try_reserve_exact(catalog.len())
@@ -319,9 +328,14 @@ impl ZenohPreparedCore {
     }
 
     /// Returns actual eagerly initialized provider capacity, not a page census.
+    /// Receiver-only catalogs return zero because they reserve no local provider.
     #[must_use]
     pub fn prewarmed_shm_segment_size(&self) -> usize {
-        self.inner.segment_size
+        if self.inner.provider.is_some() {
+            self.inner.segment_size
+        } else {
+            0
+        }
     }
 
     /// Waits for at least one native matching subscriber for an exact TX address.
@@ -666,8 +680,13 @@ impl PreparedTransportCore for ZenohPreparedCore {
         let offset_word = u32::try_from(payload_start).map_err(|_| LoanError::SlotTooSmall)?;
         let payload_word =
             u32::try_from(layout.payload_len.unwrap_or(0)).map_err(|_| LoanError::SlotTooSmall)?;
+        let provider = self
+            .inner
+            .provider
+            .as_ref()
+            .ok_or(LoanError::InvalidRoute)?;
         let native_layout = scope
-            .middleware(|| self.inner.provider.alloc_layout(aligned_len))
+            .middleware(|| provider.alloc_layout(aligned_len))
             .map_err(|_| LoanError::SlotTooSmall)?;
         let mut sample = scope
             .middleware(|| native_layout.alloc().with_policy::<GarbageCollect>().wait())

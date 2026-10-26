@@ -289,3 +289,36 @@ async fn dropping_a_detached_handle_does_not_release_a_reused_registration_slot(
         .unwrap();
     receiver.detach(&mut final_registration).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn receiver_only_catalog_reserves_no_unused_local_shm_provider() {
+    use std::collections::BTreeSet;
+    let pools = || -> BTreeSet<(String, String)> {
+        std::fs::read_to_string("/proc/self/maps")
+            .unwrap()
+            .lines()
+            .filter_map(|line| {
+                let f: Vec<_> = line.split_whitespace().collect();
+                let (start, end) = f[0].split_once('-').unwrap();
+                let bytes = usize::from_str_radix(end, 16).unwrap()
+                    - usize::from_str_radix(start, 16).unwrap();
+                // Count the exact configured payload arena, not Zenoh's small
+                // protocol/watchdog shared-memory files with the same suffix.
+                (bytes == 1024 * 1024
+                    && f.len() >= 6
+                    && f[5].starts_with("/dev/shm/")
+                    && std::path::Path::new(f[5]).extension()
+                        == Some(std::ffi::OsStr::new("zenoh")))
+                .then(|| (f[3].to_string(), f[4].to_string()))
+            })
+            .collect()
+    };
+    let before = pools();
+    let (sender, receiver) = common::pair(0, 1).await;
+    assert_eq!(sender.prewarmed_shm_segment_size(), 1024 * 1024);
+    assert_eq!(receiver.prewarmed_shm_segment_size(), 0);
+    assert_eq!(pools().difference(&before).count(), 1);
+    assert!(receiver
+        .prepare_route(&common::source(), None, common::limits(0))
+        .is_err());
+}

@@ -90,3 +90,12 @@ Runtime workers and binding delivery threads require explicit setup before the
 post-setup observation window. Unknown clients' first RPC calls remain counted.
 Native counters distinguish publication failures, SHM receive, non-SHM rejection
 and placement rejection from SDK admission/inbox/application drops.
+
+## Receiver-only physical reservations
+
+A prepared catalog containing only transmit=false entries receives retained
+remote SHM samples without reserving an unused local provider. Its
+prewarmed_shm_segment_size is zero. A catalog with any transmitting entry keeps
+its configured, eagerly initialized provider and all existing geometry checks.
+TX reservation remains invalid for receive-only addresses; receive never creates
+a provider or copies/coalesces a payload. No queue or runtime limit changes.
