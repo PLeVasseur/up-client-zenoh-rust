@@ -1,3 +1,3 @@
-# Zenoh classic message and RPC carriage
+# Zenoh classic and owned-frame carriage
 
-This capability migrates real classic sessions, URI/key projection, query/reply correlation and checked message admission to the recorded SDK. Owned-frame and SHM cores and their owning native tests join with later capabilities. The shared-memory listener-quiescence target belongs to the SHM capability.
+This capability adds concrete selected-wire owned-frame storage and its native wire-rejection tests to the checked classic message and RPC foundation. The SHM loan core, retained-SHM-sample quiescence tests and combined benchmarks join in the next capability.

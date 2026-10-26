@@ -92,6 +92,10 @@ tracing-subscriber = "0.3.23"
 up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "cae0c55d19098a498ac6629d94c4cbcede66caae", default-features = false, features = ["communication", "test-util"] }
 up-wire-xcdrv2 = { version = "=0.0.0", git = "https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git", rev = "71e1b320056854e1fb480ed0b8b9340a1de74ab0" }
 
+[[test]]
+name = "zenoh_owned_wire"
+required-features = ["benchmark-owned"]
+
 [profile.release]
 opt-level = 3
 lto = "fat"

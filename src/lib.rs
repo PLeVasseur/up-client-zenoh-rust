@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
-//! Classic uProtocol message and RPC transport bindings over Zenoh.
+//! Classic message and selected-wire owned-frame transport bindings over Zenoh.
 //!
 //! Each configured transport retains its session and registration lifecycle;
 //! selected-wire adapters provide SDK identity validation above physical carriage.
@@ -22,8 +22,13 @@ pub mod rpc;
 pub mod uri_provider;
 /// Classic message transport implementation and URI/key conversion.
 pub mod utransport;
+/// Owned selected-wire frame carriage and its transport core.
+#[cfg(feature = "benchmark-owned")]
+pub mod wire_full;
 
 pub use rpc::ZenohRpcClient;
+#[cfg(feature = "benchmark-owned")]
+pub use wire_full::ZenohOwnedCore;
 
 use listener_registry::ListenerRegistry;
 use std::{
