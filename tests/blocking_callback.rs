@@ -22,15 +22,15 @@ use up_rust::{
 };
 
 struct DelayListener {
-    recv_data: Arc<Mutex<String>>,
+    recv_data: Arc<Mutex<Vec<String>>>,
 }
 impl DelayListener {
     fn new() -> Self {
         DelayListener {
-            recv_data: Arc::new(Mutex::new(String::new())),
+            recv_data: Arc::new(Mutex::new(Vec::new())),
         }
     }
-    fn get_recv_data(&self) -> String {
+    fn get_recv_data(&self) -> Vec<String> {
         self.recv_data.lock().unwrap().clone()
     }
 }
@@ -43,11 +43,11 @@ impl UListener for DelayListener {
         if value == "Pub 0" {
             sleep(Duration::from_secs(3)).await;
         }
-        *self.recv_data.lock().unwrap() = value;
+        self.recv_data.lock().unwrap().push(value);
     }
 }
 
-// The test is used to check whether blocking user callback will affect receiving messages
+// A later callback must not overtake an earlier callback that awaits work.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_blocking_user_callback() {
     test_lib::before_test();
@@ -80,13 +80,12 @@ async fn test_blocking_user_callback() {
     uptransport_send.send(umsg0).await.unwrap();
     uptransport_send.send(umsg1).await.unwrap();
 
-    // Receive the data in reverse order due to the delay time
-    // Waiting for the subscriber to receive 2nd data
+    // The second message is retained behind the first callback, not dispatched
+    // concurrently merely because the first callback yields to the runtime.
     sleep(Duration::from_secs(1)).await;
-    assert_eq!(pub_listener.get_recv_data(), "Pub 1".to_string());
-    // Waiting for the subscriber to receive 1st data
+    assert!(pub_listener.get_recv_data().is_empty());
     sleep(Duration::from_secs(3)).await;
-    assert_eq!(pub_listener.get_recv_data(), "Pub 0".to_string());
+    assert_eq!(pub_listener.get_recv_data(), ["Pub 0", "Pub 1"]);
 
     // Cleanup
     uptransport_recv

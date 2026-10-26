@@ -5,6 +5,14 @@ state. Its typestate builder accepts a configuration value, configuration-file p
 or existing session. `ZenohRpcClient` implements the SDK RPC client contract using
 queries and replies through that transport; it does not choose a payload codec
 from incoming bytes.
+It verifies reply message type, request ID and reversed source/sink before exposing
+payload, preserves absent versus present-empty replies and maps response status
+codes to SDK invocation errors. Native query submission and reply waiting share
+the original request deadline. A call has one nonblocking one-shot reply slot;
+the first native reply completes it and later duplicates are discarded. There is
+no separate default middleware reply FIFO or per-reply task.
+[Listener lifecycle](listener-lifecycle.md) covers
+server-side pending query cancellation and expiry.
 
 The dynamic allocating SHM control separates initialized `ZenohTxBuffer` and uninitialized
 `ZenohUninitTxBuffer` publication paths. Each owns its payload allocation and

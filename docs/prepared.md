@@ -55,6 +55,15 @@ task allocation per sample or hidden binding queue. Block may hold the native
 delivery thread up to the SDK inbox deadline, including during reentrant sends;
 synchronous publication alone does not prove end-to-end nonblocking progress.
 
+A put that would synchronously reenter an already-entered local native sink is
+refused with a delivery error before native publication. Setup-owned callback
+identities cover other cores sharing the session and ancestors of nested native
+callbacks, without a per-message allocation or TLS stack. A different target and
+SDK registration-worker forwarding keep their normal path; a worker publishing
+into its own full application inbox still observes that inbox's configured
+overflow/deadline policy. See [listener lifecycle](listener-lifecycle.md) for the
+distinct admission, producer-wakeup and quiescence boundaries.
+
 Detach closes the sink before retiring the subscriber. An already-entered native
 callback retains the closed sink until its push returns. SDK stop/cancel governs
 drain and worker quiescence. Frames already admitted retain their actual Zenoh

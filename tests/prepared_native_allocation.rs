@@ -157,6 +157,76 @@ impl FrameSink<ZenohPreparedRx> for AllocatingCallback {
 }
 
 struct ReplyHandler;
+
+struct RefusingCallback {
+    route: Arc<up_rust::TxRoute<ZenohPreparedCore, Value>>,
+    count: Arc<AtomicUsize>,
+    caller: std::thread::ThreadId,
+}
+impl FrameSink<ZenohPreparedRx> for RefusingCallback {
+    fn push(&self, frame: ZenohPreparedRx) {
+        assert!(OWN_SCOPE.with(Cell::get));
+        assert_eq!(std::thread::current().id(), self.caller);
+        assert!(frame.sample().payload().as_shm().is_some());
+        let result = self.route.send(MessageFields::default(), |init| {
+            init.into_initializer().sequence(99).bytes_fill(0).finish()
+        });
+        assert!(matches!(result, Err(SendError::Delivery)));
+        assert!(OWN_SCOPE.with(Cell::get));
+        drop(frame);
+        self.count.fetch_add(1, Ordering::Release);
+    }
+    fn close(&self) {}
+}
+
+fn synchronous_reentry(runtime: &tokio::runtime::Runtime) {
+    let catalog = [ZenohRouteReservation {
+        source: common::source(),
+        sink: None,
+        limits: common::limits(std::mem::size_of::<Value>()),
+        transmit: true,
+    }];
+    let (core, _peer, _session) = runtime.block_on(common::catalog_pair(&catalog, 1, &OBSERVER));
+    let route = Arc::new(
+        TxTemplate::<Value>::new(common::agreement())
+            .unwrap()
+            .route(
+                Arc::clone(&core),
+                common::definition(common::source()),
+                RouteConfig::default(),
+            )
+            .unwrap(),
+    );
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut subscription = runtime
+        .block_on(core.attach(
+            &common::source(),
+            None,
+            Arc::new(RefusingCallback {
+                route: Arc::clone(&route),
+                count: Arc::clone(&count),
+                caller: std::thread::current().id(),
+            }),
+        ))
+        .unwrap();
+    runtime
+        .block_on(core.wait_for_matching(&common::source(), None, Duration::from_secs(5)))
+        .unwrap();
+    // The first direct native callback and its initialized-but-refused nested TX
+    // are both measured. There is no callback warm-away or observer subtraction.
+    zero("native_synchronous_reentry_refusal", 1, || {
+        route
+            .send(MessageFields::default(), |init| {
+                init.into_initializer().sequence(0).bytes_fill(0).finish()
+            })
+            .unwrap();
+        wait(&count, 1);
+        assert_eq!(core.stats().published.load(Ordering::Acquire), 1);
+        assert_eq!(core.stats().publish_failed.load(Ordering::Acquire), 1);
+        assert!(!OWN_SCOPE.with(Cell::get));
+    });
+    core.detach(&mut subscription).unwrap();
+}
 impl RequestHandler<Value, Value, ZenohPreparedRx> for ReplyHandler {
     type Reply = u32;
     async fn handle(&mut self, request: RxLease<Value, ZenohPreparedRx>) -> Result<u32, UCode> {
@@ -681,5 +751,6 @@ fn main() {
         }
     }
     rpc(&runtime);
+    synchronous_reentry(&runtime);
     println!("prepared_native_allocation_complete=true\tprocess_counter_scope=Rust_GlobalAlloc_all_threads\tnative_C_allocator_observed=false");
 }

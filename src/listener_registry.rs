@@ -13,12 +13,17 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::dispatch::Dispatch;
+use crate::pending_queries::{MessageDelivery, PendingQueries};
 use bytes::Bytes;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
+use tokio::sync::Notify;
 use tracing::{debug, enabled, info, warn, Level};
-use up_rust::ListenerAdmission;
-use up_rust::{ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UStatus};
-use zenoh::{bytes::ZBytes, pubsub::Subscriber, sample::Sample, Session};
+use up_rust::{
+    ComparableListener, RegistrationHandler, UAttributes, UAttributesValidators, UCode, UListener,
+    UStatus,
+};
+use zenoh::{bytes::ZBytes, pubsub::Subscriber, query::Queryable, sample::Sample, Session};
 
 fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes> {
     if attachment.len() < 2 {
@@ -46,14 +51,191 @@ fn attachment_to_uattributes(attachment: &ZBytes) -> anyhow::Result<UAttributes>
     Ok(validator.validate(&uattributes).map(|()| uattributes)?)
 }
 
+fn dispatch_sample(dispatch: &Dispatch<MessageDelivery>, sample: Sample) {
+    let Some(attachment) = sample.attachment() else {
+        warn!(
+            "Ignoring Zenoh Sample without attachment [key expr: {}]",
+            sample.key_expr()
+        );
+        return;
+    };
+    let attributes = match attachment_to_uattributes(attachment) {
+        Ok(attributes) => attributes,
+        Err(error) => {
+            warn!("Unable to transform attachment to valid UAttributes: {error:?}");
+            return;
+        }
+    };
+    // [impl->dsn~up-attributes-ttl~1]
+    // [impl->dsn~up-attributes-ttl-timeout~1]
+    if attributes.check_expired().is_ok() {
+        let Ok(message) = crate::utransport::message_from_parts(
+            &attributes,
+            attributes
+                .payload_encoding()
+                .map(|_| Bytes::copy_from_slice(sample.payload().to_bytes().as_ref())),
+        ) else {
+            warn!("Unable to create UMessage from Zenoh sample");
+            return;
+        };
+        // The compatibility message owns copied bytes. Release the native Sample
+        // before waiting for the one copied-value queue credit.
+        drop(sample);
+        dispatch.push(message.into());
+    } else if enabled!(Level::DEBUG) {
+        let id = attributes.id();
+        if let Some(ttl) = attributes.ttl() {
+            let ts = id.time();
+            debug!(
+                "discarding expired message [id: {}, created: {ts}, ttl: {ttl}]",
+                id.to_hyphenated_string()
+            );
+        }
+    }
+}
+
 // mapping of (Zenoh Key expression, Message Listener) ->  Zenoh Subscriber
-type SubscriberMap =
-    Mutex<HashMap<(String, ComparableListener), (Subscriber<()>, Arc<ListenerAdmission>)>>;
+type SubscriberMap = Mutex<HashMap<(String, ComparableListener), Arc<SubscriberEntry>>>;
+
+struct SubscriberEntry {
+    dispatch: Arc<Dispatch<MessageDelivery>>,
+    native: Mutex<Option<NativeRegistration>>,
+    queries: Option<Arc<PendingQueries>>,
+    outcome: Mutex<Option<Result<(), UStatus>>>,
+    ready: Notify,
+}
+
+impl Drop for SubscriberEntry {
+    fn drop(&mut self) {
+        // Close before the native handle drops, including transport destruction
+        // while a native callback still holds a dispatch reference.
+        self.dispatch.close();
+        if let Some(queries) = &self.queries {
+            queries.remove_owner(self.dispatch.activity());
+        }
+    }
+}
+
+struct NativeRegistration {
+    subscriber: Subscriber<()>,
+    queryable: Option<Queryable<()>>,
+}
+
+impl NativeRegistration {
+    async fn new(session: &Session, key: &str, entry: &SubscriberEntry) -> Result<Self, UStatus> {
+        entry.dispatch.bind(session, key).await?;
+        let dispatch = Arc::clone(&entry.dispatch);
+        // [impl->dsn~supported-message-delivery-methods~1]
+        // [impl->dsn~utransport-registerlistener-start-invoking-listeners~1]
+        let subscriber = session
+            .declare_subscriber(key)
+            .callback(move |sample| dispatch_sample(&dispatch, sample))
+            .await
+            .map_err(|error| UStatus::fail_with_code(UCode::Internal, error.to_string()))?;
+        let queryable = if let Some(queries) = &entry.queries {
+            Some(
+                crate::UPTransportZenoh::request_queryable(
+                    session,
+                    key,
+                    Arc::clone(&entry.dispatch),
+                    Arc::clone(queries),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            subscriber,
+            queryable,
+        })
+    }
+
+    async fn undeclare(self) -> Result<(), UStatus> {
+        let subscriber = self.subscriber.undeclare().await;
+        let queryable = if let Some(queryable) = self.queryable {
+            queryable.undeclare().await
+        } else {
+            Ok(())
+        };
+        subscriber.and(queryable).map_err(|error| {
+            UStatus::fail_with_code(
+                UCode::Internal,
+                format!("Failed to undeclare listener: {error}"),
+            )
+        })
+    }
+}
+impl SubscriberEntry {
+    async fn wait_ready(&self) -> Result<(), UStatus> {
+        loop {
+            let ready = self.ready.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            if let Some(result) = self.outcome.lock().unwrap().clone() {
+                return result;
+            }
+            ready.await;
+        }
+    }
+    fn retire(&self, status: UStatus) -> Option<NativeRegistration> {
+        self.dispatch.close();
+        let mut outcome = self.outcome.lock().unwrap();
+        *outcome = Some(Err(status));
+        let native = self.native.lock().unwrap().take();
+        drop(outcome);
+        self.ready.notify_waiters();
+        if let Some(queries) = &self.queries {
+            queries.remove_owner(self.dispatch.activity());
+        }
+        native
+    }
+}
+struct Creating<'a> {
+    registry: &'a ListenerRegistry,
+    key: (String, ComparableListener),
+    entry: Arc<SubscriberEntry>,
+    armed: bool,
+}
+impl Drop for Creating<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut entries = self.registry.subscribers.lock().unwrap();
+            if entries
+                .get(&self.key)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &self.entry))
+            {
+                entries.remove(&self.key);
+            }
+            drop(entries);
+            drop(self.entry.retire(UStatus::fail_with_code(
+                UCode::Cancelled,
+                "listener creation cancelled",
+            )));
+        }
+    }
+}
+
+struct MessageHandler(ComparableListener);
+impl RegistrationHandler<MessageDelivery> for MessageHandler {
+    async fn on_receive(&mut self, message: MessageDelivery) {
+        message.deliver(&*self.0).await;
+    }
+}
 
 pub(crate) struct ListenerRegistry {
     subscribers: SubscriberMap,
     session: Arc<Session>,
     max_subscribers: usize,
+}
+
+impl Drop for ListenerRegistry {
+    fn drop(&mut self) {
+        // Wake every copied-control producer before retiring any native handle.
+        for entry in self.subscribers.get_mut().unwrap().values() {
+            entry.dispatch.close();
+        }
+    }
 }
 
 impl ListenerRegistry {
@@ -76,107 +258,83 @@ impl ListenerRegistry {
         &self,
         zenoh_key: String,
         listener: Arc<dyn UListener>,
+        queries: Option<Arc<PendingQueries>>,
     ) -> Result<(), UStatus> {
-        // get a lock on the listener registry so that we can safely check and register the listener
-        let mut locked_subscribers = self.subscribers.lock().await;
         let comparable_listener = ComparableListener::new(listener);
-
-        // [impl->dsn~utransport-registerlistener-idempotent~1]
-        if locked_subscribers.contains_key(&(zenoh_key.clone(), comparable_listener.clone())) {
-            debug!("Listener already registered");
-            return Ok(());
-        }
-        // [impl->dsn~utransport-registerlistener-error-resource-exhausted~1]
-        if locked_subscribers.len() >= self.max_subscribers {
-            return Err(UStatus::fail_with_code(
-                UCode::ResourceExhausted,
-                format!(
-                    "Maximum number of listeners reached: {}",
-                    self.max_subscribers
-                ),
-            ));
-        }
-
-        let listener_to_invoke_in_callback = comparable_listener.clone();
-        let activity = Arc::new(ListenerAdmission::new());
-        let callback_activity = Arc::clone(&activity);
-
-        // Setup callback
-        let callback = move |sample: Sample| {
-            let listener_cloned = listener_to_invoke_in_callback.clone();
-            // Get the UAttribute from Zenoh user attachment
-            let Some(attachment) = sample.attachment() else {
-                warn!(
-                    "Ignoring Zenoh Sample without attachment [key expr: {}]",
-                    sample.key_expr()
-                );
-                return;
-            };
-            let attributes = match attachment_to_uattributes(attachment) {
-                Ok(attr) => attr,
-                Err(e) => {
-                    warn!("Unable to transform attachment to valid UAttributes: {e:?}");
-                    return;
+        let key = (zenoh_key.clone(), comparable_listener.clone());
+        let (entry, creating) = {
+            let mut entries = self.subscribers.lock().unwrap();
+            if let Some(entry) = entries.get(&key) {
+                (Arc::clone(entry), false)
+            } else {
+                if entries.len() >= self.max_subscribers {
+                    return Err(UStatus::fail_with_code(
+                        UCode::ResourceExhausted,
+                        format!(
+                            "Maximum number of listeners reached: {}",
+                            self.max_subscribers
+                        ),
+                    ));
                 }
-            };
-            // we must only process messages that have not expired yet
-            // [impl->dsn~up-attributes-ttl~1]
-            // [impl->dsn~up-attributes-ttl-timeout~1]
-            if attributes.check_expired().is_ok() {
-                // Create UMessage
-                let Ok(msg) = crate::utransport::message_from_parts(
-                    &attributes,
-                    attributes
-                        .payload_encoding()
-                        .map(|_| Bytes::copy_from_slice(sample.payload().to_bytes().as_ref())),
-                ) else {
-                    warn!("Unable to create UMessage from Zenoh sample");
-                    return;
-                };
-                let activity = Arc::clone(&callback_activity);
-                // Note that we are invoking the listener in a dedicated task
-                // to avoid blocking the Zenoh callback thread
-                // while still using Zenoh's underlying tokio runtime.
-                // It is the responsibility of the listener to offload the
-                // processing of the message to a dedicated tokio runtime or thread,
-                // if necessary.
-                // This is a deliberate design choice to let implementers of
-                // `UListener` decide how to handle incoming messages and use
-                // a custom tokio runtime configuration.
-                tokio::spawn(async move {
-                    activity.dispatch(|| listener_cloned.on_receive(msg)).await;
+                let entry = Arc::new(SubscriberEntry {
+                    dispatch: Dispatch::new(MessageHandler(comparable_listener.clone()))?,
+                    native: Mutex::new(None),
+                    queries,
+                    outcome: Mutex::new(None),
+                    ready: Notify::new(),
                 });
-            } else if enabled!(Level::DEBUG) {
-                let id = attributes.id();
-                if let Some(ttl) = attributes.ttl() {
-                    let ts = id.time();
-                    debug!(
-                        "discarding expired message [id: {}, created: {ts}, ttl: {ttl}]",
-                        id.to_hyphenated_string(),
-                    );
-                }
+                entries.insert(key.clone(), Arc::clone(&entry));
+                (entry, true)
             }
         };
-
-        // Create Zenoh subscriber
-        // [impl->dsn~supported-message-delivery-methods~1]
-        match self
-            .session
-            // [impl->dsn~utransport-registerlistener-start-invoking-listeners~1]
-            .declare_subscriber(&zenoh_key)
-            .callback_mut(callback)
-            .await
-        {
-            Ok(subscriber) => {
-                // [impl->dsn~utransport-registerlistener-number-of-listeners~1]
-                // [impl->dsn~utransport-registerlistener-listener-reuse~1]
-                locked_subscribers.insert((zenoh_key, comparable_listener), (subscriber, activity));
-                Ok(())
+        // Concurrent duplicates share the pending result without holding the map
+        // lock over native declaration, another registration, or user work.
+        if !creating {
+            return entry.wait_ready().await;
+        }
+        let mut creation = Creating {
+            registry: self,
+            key,
+            entry: Arc::clone(&entry),
+            armed: true,
+        };
+        match NativeRegistration::new(&self.session, &zenoh_key, &entry).await {
+            Ok(native) => {
+                let rejected = {
+                    let mut outcome = entry.outcome.lock().unwrap();
+                    if outcome.is_some() {
+                        Some(native)
+                    } else {
+                        *entry.native.lock().unwrap() = Some(native);
+                        *outcome = Some(Ok(()));
+                        None
+                    }
+                };
+                entry.ready.notify_waiters();
+                if let Some(native) = rejected {
+                    native.undeclare().await?;
+                    return Err(UStatus::fail_with_code(
+                        UCode::Cancelled,
+                        "listener removed during creation",
+                    ));
+                }
+                creation.armed = false;
+                entry.wait_ready().await
             }
-            Err(e) => {
-                let msg = "Failed to register listener";
-                warn!("{msg}: {e}");
-                Err(UStatus::fail_with_code(UCode::Internal, msg))
+            Err(error) => {
+                // Every duplicate waiter observes the creator's actual error.
+                // Remove only this pending generation before permitting a retry.
+                let mut entries = self.subscribers.lock().unwrap();
+                if entries
+                    .get(&creation.key)
+                    .is_some_and(|value| Arc::ptr_eq(value, &entry))
+                {
+                    entries.remove(&creation.key);
+                }
+                drop(entries);
+                drop(entry.retire(error.clone()));
+                creation.armed = false;
+                Err(error)
             }
         }
     }
@@ -186,13 +344,13 @@ impl ListenerRegistry {
         key_expr: &str,
         listener: ComparableListener,
     ) -> Result<(), UStatus> {
-        // Undeclaring the native subscriber alone does not cancel tasks already
-        // queued by its callback. Close admission before returning success.
+        // Close the copied-value queue before undeclaring native delivery, waking
+        // a blocked producer without retaining the registry lock across drain.
         // [impl->dsn~utransport-unregisterlistener-stop-invoking-listeners~1]
-        let Some((subscriber, activity)) = self
+        let Some(entry) = self
             .subscribers
             .lock()
-            .await
+            .unwrap()
             .remove(&(key_expr.to_string(), listener.clone()))
         else {
             // [impl->dsn~utransport-unregisterlistener-error-notfound~1]
@@ -201,13 +359,13 @@ impl ListenerRegistry {
                 format!("No such listener registered for key expression: {key_expr}"),
             ));
         };
-        activity.stop().await;
-        subscriber.undeclare().await.map_err(|error| {
-            UStatus::fail_with_code(
-                UCode::Internal,
-                format!("Failed to undeclare subscriber: {error}"),
-            )
-        })?;
+        if let Some(native) = entry.retire(UStatus::fail_with_code(
+            UCode::Cancelled,
+            "listener removed",
+        )) {
+            native.undeclare().await?;
+        }
+        entry.dispatch.stop().await?;
         Ok(())
     }
 }
@@ -216,7 +374,26 @@ impl ListenerRegistry {
 mod tests {
 
     use super::*;
+    use std::{
+        future::{poll_fn, Future},
+        task::Poll,
+    };
     use up_rust::{MockUListener, UMessageBuilder, UUri};
+
+    fn entry(
+        registry: &ListenerRegistry,
+        key: &str,
+        listener: &Arc<dyn UListener>,
+    ) -> Arc<SubscriberEntry> {
+        Arc::clone(
+            registry
+                .subscribers
+                .lock()
+                .unwrap()
+                .get(&(key.into(), ComparableListener::new(Arc::clone(listener))))
+                .unwrap(),
+        )
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     // [utest->dsn~utransport-registerlistener-idempotent~1]
@@ -228,20 +405,113 @@ mod tests {
         let listener = Arc::new(MockUListener::new());
 
         assert!(registry
-            .register_subscriber("key1".to_string(), listener.clone())
+            .register_subscriber("key1".to_string(), listener.clone(), None)
             .await
             .is_ok());
         // Registering the same listener again should not fail
         assert!(registry
-            .register_subscriber("key1".to_string(), listener.clone())
+            .register_subscriber("key1".to_string(), listener.clone(), None)
             .await
             .is_ok());
 
         {
-            let locked_subscribers = registry.subscribers.lock().await;
+            let locked_subscribers = registry.subscribers.lock().unwrap();
             assert!(locked_subscribers
                 .contains_key(&("key1".to_string(), ComparableListener::new(listener))));
         }
+    }
+
+    #[test_case::test_case(false; "cancel pending creator")]
+    #[test_case::test_case(true; "remove pending creator")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pending_rpc_setup_releases_duplicates_and_allows_a_new_generation(remove: bool) {
+        let mut config = zenoh::Config::default();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        let session = Arc::new(zenoh::open(config).await.unwrap());
+        let registry = ListenerRegistry::new(Arc::clone(&session), 3);
+        let listener: Arc<dyn UListener> = Arc::new(MockUListener::new());
+        registry
+            .register_subscriber("existing".into(), Arc::clone(&listener), None)
+            .await
+            .unwrap();
+        let activity = Arc::clone(entry(&registry, "existing", &listener).dispatch.activity());
+        let queries = PendingQueries::new().unwrap();
+        activity
+            .dispatch(|| async {
+                // The actual publication guard excludes new native dispatch targets
+                // until this synchronous publication's reservations have retired.
+                let publication =
+                    crate::dispatch::reserve_publication(&session, "existing").unwrap();
+                let mut creating = Box::pin(registry.register_subscriber(
+                    "pending".into(),
+                    Arc::clone(&listener),
+                    Some(Arc::clone(&queries)),
+                ));
+                assert!(poll_fn(|cx| Poll::Ready(creating.as_mut().poll(cx)))
+                    .await
+                    .is_pending());
+                let mut duplicate = Box::pin(registry.register_subscriber(
+                    "pending".into(),
+                    Arc::clone(&listener),
+                    Some(Arc::clone(&queries)),
+                ));
+                assert!(poll_fn(|cx| Poll::Ready(duplicate.as_mut().poll(cx)))
+                    .await
+                    .is_pending());
+                if remove {
+                    registry
+                        .unregister("pending", ComparableListener::new(Arc::clone(&listener)))
+                        .await
+                        .unwrap();
+                } else {
+                    drop(creating);
+                    assert_eq!(duplicate.await.unwrap_err().code(), UCode::Cancelled);
+                    drop(publication);
+                    registry
+                        .register_subscriber(
+                            "pending".into(),
+                            Arc::clone(&listener),
+                            Some(Arc::clone(&queries)),
+                        )
+                        .await
+                        .unwrap();
+                    return;
+                }
+                assert_eq!(duplicate.await.unwrap_err().code(), UCode::Cancelled);
+                drop(publication);
+                // Install a replacement before the old creator resumes. Its eventual
+                // rollback must not delete the replacement's native handles.
+                registry
+                    .register_subscriber(
+                        "pending".into(),
+                        Arc::clone(&listener),
+                        Some(Arc::clone(&queries)),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(creating.await.unwrap_err().code(), UCode::Cancelled);
+            })
+            .await;
+        assert_eq!(registry.subscribers.lock().unwrap().len(), 2);
+        assert!(entry(&registry, "pending", &listener)
+            .native
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .queryable
+            .is_some());
+        registry
+            .unregister("pending", ComparableListener::new(Arc::clone(&listener)))
+            .await
+            .unwrap();
+        registry
+            .unregister("existing", ComparableListener::new(listener))
+            .await
+            .unwrap();
     }
 
     #[test]

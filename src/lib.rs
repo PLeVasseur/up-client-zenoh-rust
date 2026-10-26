@@ -14,8 +14,11 @@
 //!
 //! Each configured transport retains its session and registration lifecycle;
 //! selected-wire adapters provide SDK identity validation above physical carriage.
+mod dispatch;
 mod listener_registry;
 mod mechanics;
+mod native_callback;
+mod pending_queries;
 #[cfg(feature = "zero-copy")]
 mod prepared;
 /// SDK RPC client integration using Zenoh queries and replies.
@@ -46,21 +49,13 @@ pub use zero_copy::{
 };
 
 use listener_registry::ListenerRegistry;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 use tracing::{error, info, warn};
-use up_rust::{ComparableListener, ProtobufMappable, UAttributes, UCode, UPriority, UStatus, UUri};
+use up_rust::{ProtobufMappable, UAttributes, UCode, UPriority, UStatus, UUri};
 use zenoh::Config;
 // Re-export Zenoh config
 pub use zenoh::config as zenoh_config;
-use zenoh::{
-    bytes::ZBytes,
-    qos::Priority,
-    query::{Query, Queryable},
-    Session,
-};
+use zenoh::{bytes::ZBytes, qos::Priority, Session};
 
 const UPROTOCOL_MAJOR_VERSION: u8 = 1;
 const DEFAULT_MAX_LISTENERS: usize = 100;
@@ -71,18 +66,13 @@ const COMPRESSION_ENABLED_FOR_UNICAST_MESSAGE_PREFIX: &str =
 const COMPRESSION_ENABLED_FOR_MULTICAST_MESSAGE_PREFIX: &str =
     "Compression for the multicast transport is enabled in the Zenoh configuration";
 
-type QueryableMap = Arc<
-    Mutex<HashMap<(String, ComparableListener), (Queryable<()>, Arc<up_rust::ListenerAdmission>)>>,
->;
-type QueryMap = Arc<Mutex<HashMap<String, Query>>>;
 /// Classic uProtocol transport retaining a Zenoh session, listeners and RPC correlation state.
+/// Query correlations expire at the request TTL and are retired on listener removal.
 pub struct UPTransportZenoh {
     session: Arc<Session>,
     subscribers: ListenerRegistry,
-    // Able to unregister Queryable
-    queryable_map: QueryableMap,
     // Save the reqid to be able to send back response
-    query_map: QueryMap,
+    query_map: Arc<pending_queries::PendingQueries>,
     // URI
     uri: UUri,
 }
@@ -172,13 +162,13 @@ impl UPTransportZenoh {
             error!("{msg}: {err}");
             UStatus::fail_with_code(UCode::Internal, msg)
         })?;
-        Ok(Self::init_with_session(
+        Self::init_with_session(
             session,
             local_authority,
             max_listeners,
             // no need to warn about compression here, since we already did that above
             false,
-        ))
+        )
     }
 
     fn init_with_session(
@@ -186,7 +176,7 @@ impl UPTransportZenoh {
         local_authority: &str,
         max_listeners: usize,
         warn_on_compression_enabled: bool,
-    ) -> UPTransportZenoh {
+    ) -> Result<UPTransportZenoh, UStatus> {
         if warn_on_compression_enabled {
             info!(
                 "{} Please be aware that Zenoh uses the lz4_flex crate in a version that is affected by RUST-SEC-2026-0041, which may result in data leakage when compression is enabled for Zenoh. It is therefore strongly recommended to disable compression in the Zenoh configuration when using this transport.",
@@ -194,15 +184,14 @@ impl UPTransportZenoh {
             );
         }
         let session_to_use = Arc::new(session);
-        UPTransportZenoh {
+        Ok(UPTransportZenoh {
             session: session_to_use.clone(),
             subscribers: ListenerRegistry::new(session_to_use, max_listeners),
-            queryable_map: Arc::new(Mutex::new(HashMap::new())),
-            query_map: Arc::new(Mutex::new(HashMap::new())),
+            query_map: pending_queries::PendingQueries::new()?,
             // The authority-only builder does not select an application entity.
             // Applications can use a separate URI provider or new with a full URI.
             uri: UUri::try_from_parts(local_authority, 0, 0, 0).expect("validated authority"),
-        }
+        })
     }
 
     /// Enables a tracing formatter subscriber that is initialized from the `RUST_LOG` environment variable.
@@ -383,12 +372,12 @@ impl UPTransportZenohBuilder<SessionBuilderState> {
     /// # }
     /// ```
     pub fn build(self) -> Result<UPTransportZenoh, UStatus> {
-        Ok(UPTransportZenoh::init_with_session(
+        UPTransportZenoh::init_with_session(
             self.extra.zenoh_session,
             &self.common.local_authority,
             self.common.max_listeners,
             true, // warn about compression enabled in existing session
-        ))
+        )
     }
 }
 

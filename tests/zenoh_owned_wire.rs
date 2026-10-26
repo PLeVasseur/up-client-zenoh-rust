@@ -213,6 +213,79 @@ struct ChannelOwnedListener {
     rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
 }
 
+struct BoundedOwnedListener(mpsc::Sender<Vec<u8>>);
+
+#[async_trait]
+impl UOwnedListener for BoundedOwnedListener {
+    async fn on_receive_owned(&self, frame: UOwnedFrame) {
+        self.0.send(frame.payload_bytes().to_vec()).await.unwrap();
+    }
+}
+
+#[test_case::test_case(false; "sequential duplicate")]
+#[test_case::test_case(true; "concurrent duplicates")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial]
+async fn owned_duplicate_registration_delivers_once_and_retires_once(
+    concurrent: bool,
+) -> Result<(), TestError> {
+    let authority = format!("zenoh-owned-duplicate-{}", std::process::id());
+    let transport = owned_transport::<ProtobufWire>(&authority).await;
+    let source = topic_for(&authority, 0x9000);
+    let (sender, mut receiver) = mpsc::channel(4);
+    let listener: Arc<dyn UOwnedListener> = Arc::new(BoundedOwnedListener(sender));
+    if concurrent {
+        let (left, right) = tokio::join!(
+            transport.register_owned_listener(&source, None, Arc::clone(&listener)),
+            transport.register_owned_listener(&source, None, Arc::clone(&listener)),
+        );
+        left?;
+        right?;
+    } else {
+        transport
+            .register_owned_listener(&source, None, Arc::clone(&listener))
+            .await?;
+        transport
+            .register_owned_listener(&source, None, Arc::clone(&listener))
+            .await?;
+    }
+    allow_subscriber_matching().await;
+    transport
+        .send_owned(UOwnedFrame::with_payload(
+            metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
+            Bytes::from_static(b"once"),
+        )?)
+        .await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await?
+            .unwrap(),
+        b"once"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .is_err(),
+        "duplicate registration caused duplicate delivery"
+    );
+    transport
+        .unregister_owned_listener(&source, None, Arc::clone(&listener))
+        .await?;
+    transport
+        .send_owned(UOwnedFrame::with_payload(
+            metadata(source, Some(PayloadEncoding::PROTOBUF)),
+            Bytes::from_static(b"retired"),
+        )?)
+        .await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .is_err(),
+        "one unregister left a duplicate native subscriber alive"
+    );
+    Ok(())
+}
+
 impl Default for ChannelOwnedListener {
     fn default() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();

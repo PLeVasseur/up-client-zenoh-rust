@@ -142,6 +142,9 @@ pub struct ZenohPreparedStats {
 /// Each registration creates one actual subscriber whose callback synchronously
 /// pushes a retained native sample into the SDK's generic inbox. There is no
 /// binding queue, per-message task, attachment or payload coalescing/copying.
+/// Publication back into an entered local native sink on the same synchronous
+/// callback stack is refused before native put. SDK registration-worker handlers
+/// run outside that native callback and retain their ordinary publication path.
 #[derive(Clone)]
 pub struct ZenohPreparedCore {
     inner: Arc<Inner>,
@@ -716,6 +719,17 @@ impl PreparedTransportCore for ZenohPreparedCore {
         let sample = tx.sample.as_ref().ok_or(SendError::PayloadStorage)?;
         let priority = priority_index(&sample.as_ref()[tx.metadata.clone()])
             .ok_or(SendError::PayloadStorage)?;
+        let publisher = &self.inner.endpoints[route.endpoint].publishers[priority];
+        if crate::native_callback::would_reenter(
+            self.inner.mechanics.session(),
+            publisher.key_expr(),
+        ) {
+            self.inner
+                .stats
+                .publish_failed
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(SendError::Delivery);
+        }
         let sample = tx.sample.take().ok_or(SendError::PayloadStorage)?;
         scope
             .middleware(|| {
@@ -742,6 +756,12 @@ impl PreparedTransportCore for ZenohPreparedCore {
     ) -> Result<Self::Subscription, SetupError> {
         let slot = reserve(&self.inner.registrations)?;
         let key = self.inner.mechanics.to_zenoh_key_string(source, sink);
+        let callback =
+            crate::native_callback::NativeCallback::new(self.inner.mechanics.session(), &key)
+                .map_err(|()| {
+                    self.inner.registrations[slot].store(false, Ordering::Release);
+                    SetupError::Worker
+                })?;
         let inner = Arc::clone(&self.inner);
         let callback_sink = Arc::clone(&inbox);
         let subscriber = self
@@ -751,6 +771,7 @@ impl PreparedTransportCore for ZenohPreparedCore {
             .declare_subscriber(key)
             .callback_mut(move |sample: Sample| {
                 let scope = Scope::enter(inner.observer);
+                let _callback = callback.enter();
                 if sample.payload().as_shm().is_none() {
                     inner.stats.rejected_non_shm.fetch_add(1, Ordering::Relaxed);
                     scope.middleware(|| drop(sample));

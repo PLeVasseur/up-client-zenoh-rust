@@ -17,7 +17,7 @@ use std::{
     mem::MaybeUninit,
     num::NonZeroUsize,
     ops::Deref,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use tracing::{trace, warn};
@@ -37,14 +37,78 @@ use zenoh::{
 use crate::mechanics::{ZenohWireMechanics, DEFAULT_SHM_SEGMENT_SIZE};
 use up_rust::ListenerAdmission;
 
-type ZeroCopySubscriberMap = Arc<
-    tokio::sync::Mutex<
-        std::collections::HashMap<
-            (String, ComparableZeroCopyListener),
-            (zenoh::pubsub::Subscriber<()>, Arc<ListenerAdmission>),
-        >,
-    >,
+type ZeroCopySubscriberMap = Mutex<
+    std::collections::HashMap<(String, ComparableZeroCopyListener), Arc<DynamicRegistration>>,
 >;
+
+struct DynamicRegistration {
+    listener: ComparableZeroCopyListener,
+    activity: Arc<ListenerAdmission>,
+    subscriber: Mutex<Option<zenoh::pubsub::Subscriber<()>>>,
+    outcome: Mutex<Option<Result<(), UStatus>>>,
+    ready: tokio::sync::Notify,
+}
+
+impl DynamicRegistration {
+    async fn wait_ready(&self) -> Result<(), UStatus> {
+        loop {
+            let ready = self.ready.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            if let Some(outcome) = self.outcome.lock().unwrap().clone() {
+                return outcome;
+            }
+            ready.await;
+        }
+    }
+
+    fn close(&self, status: UStatus, close_sink: bool) -> Option<zenoh::pubsub::Subscriber<()>> {
+        self.activity.cancel();
+        if close_sink {
+            self.listener.close();
+        }
+        let mut outcome = self.outcome.lock().unwrap();
+        *outcome = Some(Err(status));
+        let subscriber = self.subscriber.lock().unwrap().take();
+        drop(outcome);
+        self.ready.notify_waiters();
+        subscriber
+    }
+}
+
+struct CreatingDynamic<'a> {
+    entries: &'a ZeroCopySubscriberMap,
+    key: (String, ComparableZeroCopyListener),
+    entry: Arc<DynamicRegistration>,
+    armed: bool,
+}
+
+impl CreatingDynamic<'_> {
+    fn fail(&mut self, status: UStatus) {
+        let mut entries = self.entries.lock().unwrap();
+        if entries
+            .get(&self.key)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &self.entry))
+        {
+            entries.remove(&self.key);
+        }
+        drop(entries);
+        // Failed setup owns native admission, not the caller's reusable sink.
+        drop(self.entry.close(status, false));
+        self.armed = false;
+    }
+}
+
+impl Drop for CreatingDynamic<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.fail(UStatus::fail_with_code(
+                UCode::Cancelled,
+                "dynamic listener creation cancelled",
+            ));
+        }
+    }
+}
 
 /// Dynamic allocating Zenoh SHM control with selected-wire attachment carriage.
 ///
@@ -63,6 +127,17 @@ pub struct ZenohZeroCopyCore {
     listener_quiesce_timeout: std::time::Duration,
     publisher_readiness_timeout: Option<std::time::Duration>,
     prewarmed_shm_segment_size: Option<usize>,
+}
+
+impl Drop for ZenohZeroCopyCore {
+    fn drop(&mut self) {
+        // No registry lock: exclusive destruction closes all sinks before any
+        // native handle/session is released, including blocked fan-out delivery.
+        for entry in self.subscriber_map.get_mut().unwrap().values() {
+            entry.activity.cancel();
+            entry.listener.close();
+        }
+    }
 }
 
 /// Builder for [`ZenohZeroCopyCore`].
@@ -131,7 +206,7 @@ impl ZenohZeroCopyCore {
     where
         W: UWire,
     {
-        crate::ZenohOwnedCore::from_mechanics(self.mechanics)
+        crate::ZenohOwnedCore::from_mechanics(self.mechanics.clone())
             .into_native_prefix_wire_transport(wire)
     }
 
@@ -251,7 +326,7 @@ impl ZenohZeroCopyCoreBuilder {
             .transpose()?;
         Ok(ZenohZeroCopyCore {
             mechanics,
-            subscriber_map: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            subscriber_map: Mutex::new(std::collections::HashMap::new()),
             listener_quiesce_timeout: self.listener_quiesce_timeout,
             publisher_readiness_timeout: self.publisher_readiness_timeout,
             prewarmed_shm_segment_size,
@@ -494,10 +569,20 @@ impl ZenohZeroCopyCore {
     }
 
     /// Publishes an allocating control loan, optionally waiting for native matching.
+    /// Refuses publication back into an entered local native sink on this
+    /// synchronous callback stack before invoking the middleware.
     ///
     /// # Errors
     /// Reports native publisher/matching/publication failure or the readiness deadline.
     pub async fn publish_encoded(&self, buffer: ZenohTxBuffer) -> Result<(), UStatus> {
+        let key = zenoh::key_expr::keyexpr::new(&buffer.zenoh_key)
+            .map_err(|error| UStatus::fail_with_code(UCode::InvalidArgument, error.to_string()))?;
+        if crate::native_callback::would_reenter(self.mechanics.session(), key) {
+            return Err(UStatus::fail_with_code(
+                UCode::FailedPrecondition,
+                "publication would reenter an active native sink",
+            ));
+        }
         if let Some(timeout) = self.publisher_readiness_timeout {
             let deadline = tokio::time::Instant::now()
                 .checked_add(timeout)
@@ -578,6 +663,8 @@ impl ZenohZeroCopyCore {
     }
 
     /// Receives an allocating-control sample retaining its native SHM lease.
+    /// One pending operation has one nonblocking result slot; dropping its future
+    /// retires the native subscription. There is no general-purpose receive FIFO.
     ///
     /// # Errors
     /// Reports declaration/receive failure or a non-SHM payload.
@@ -589,10 +676,30 @@ impl ZenohZeroCopyCore {
         let zenoh_key = self
             .mechanics
             .to_zenoh_key_string(source_filter, sink_filter);
-        let subscriber = self
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let mut sender = Some(sender);
+        let _subscriber = self
             .mechanics
             .session()
             .declare_subscriber(&zenoh_key)
+            .callback_mut(move |sample: Sample| {
+                if sender.is_none() {
+                    return;
+                }
+                let Some(attachment) = sample.attachment() else {
+                    warn!(
+                        "Ignoring Zenoh sample without zero-copy attachment [key expr: {}]",
+                        sample.key_expr()
+                    );
+                    return;
+                };
+                let attachment = attachment.clone();
+                let result = ensure_strict_shm_payload(&sample)
+                    .map(|()| ZenohRxFrame::new(attachment, sample));
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(result);
+                }
+            })
             .await
             .map_err(|err| {
                 UStatus::fail_with_code(
@@ -601,29 +708,23 @@ impl ZenohZeroCopyCore {
                 )
             })?;
 
-        loop {
-            let sample = subscriber.recv_async().await.map_err(|err| {
-                UStatus::fail_with_code(
-                    UCode::Internal,
-                    format!("failed to receive Zenoh sample: {err}"),
-                )
-            })?;
-            let Some(attachment) = sample.attachment() else {
-                warn!(
-                    "Ignoring Zenoh sample without zero-copy attachment [key expr: {}]",
-                    sample.key_expr()
-                );
-                continue;
-            };
-            ensure_strict_shm_payload(&sample)?;
-            return Ok(ZenohRxFrame::new(attachment.clone(), sample));
-        }
+        receiver.await.map_err(|error| {
+            UStatus::fail_with_code(
+                UCode::Internal,
+                format!("failed to receive Zenoh sample: {error}"),
+            )
+        })?
     }
 
     /// Attaches an encoded sink to the dynamic allocating control.
+    /// Duplicate registrations share pending setup without holding the registry
+    /// lock across native declaration. Cancellation closes only that generation.
     ///
     /// # Errors
     /// Reports failure to declare the native subscriber.
+    ///
+    /// # Panics
+    /// Panics if internal listener registration state was poisoned.
     pub async fn attach_encoded(
         &self,
         source_filter: &UUri,
@@ -634,35 +735,108 @@ impl ZenohZeroCopyCore {
             .mechanics
             .to_zenoh_key_string(source_filter, sink_filter);
         let comparable_listener = ComparableZeroCopyListener::new(listener);
-        let mut listeners = self.subscriber_map.lock().await;
-        if listeners.contains_key(&(zenoh_key.clone(), comparable_listener.clone())) {
-            return Ok(());
+        let key = (zenoh_key.clone(), comparable_listener.clone());
+        let (entry, creating) = {
+            let mut listeners = self.subscriber_map.lock().unwrap();
+            if let Some(entry) = listeners.get(&key) {
+                (Arc::clone(entry), false)
+            } else {
+                let entry = Arc::new(DynamicRegistration {
+                    listener: comparable_listener,
+                    activity: Arc::new(ListenerAdmission::new()),
+                    subscriber: Mutex::new(None),
+                    outcome: Mutex::new(None),
+                    ready: tokio::sync::Notify::new(),
+                });
+                listeners.insert(key.clone(), Arc::clone(&entry));
+                (entry, true)
+            }
+        };
+        if !creating {
+            return entry.wait_ready().await;
         }
+        let mut creation = CreatingDynamic {
+            entries: &self.subscriber_map,
+            key,
+            entry: Arc::clone(&entry),
+            armed: true,
+        };
+        match self.declare_dynamic(&zenoh_key, &entry).await {
+            Ok(subscriber) => {
+                let rejected = {
+                    let mut outcome = entry.outcome.lock().unwrap();
+                    if outcome.is_some() {
+                        Some(subscriber)
+                    } else {
+                        *entry.subscriber.lock().unwrap() = Some(subscriber);
+                        *outcome = Some(Ok(()));
+                        None
+                    }
+                };
+                entry.ready.notify_waiters();
+                if let Some(subscriber) = rejected {
+                    subscriber.undeclare().await.map_err(|error| {
+                        UStatus::fail_with_code(UCode::Internal, error.to_string())
+                    })?;
+                    return Err(UStatus::fail_with_code(
+                        UCode::Cancelled,
+                        "dynamic listener removed during creation",
+                    ));
+                }
+                creation.armed = false;
+                entry.wait_ready().await
+            }
+            Err(error) => {
+                creation.fail(error.clone());
+                Err(error)
+            }
+        }
+    }
 
-        let callback_listener = comparable_listener.clone();
-        let activity = Arc::new(ListenerAdmission::new());
-        let callback_activity = Arc::clone(&activity);
+    async fn declare_dynamic(
+        &self,
+        key: &str,
+        entry: &DynamicRegistration,
+    ) -> Result<zenoh::pubsub::Subscriber<()>, UStatus> {
+        let callback_listener = entry.listener.clone();
+        let callback_activity = Arc::clone(&entry.activity);
+        let callback = crate::native_callback::NativeCallback::new(self.mechanics.session(), key)
+            .map_err(|()| {
+            UStatus::fail_with_code(UCode::InvalidArgument, "invalid native callback key")
+        })?;
         let subscriber = self
             .mechanics
             .session()
-            .declare_subscriber(&zenoh_key)
+            .declare_subscriber(key)
             .callback_mut(move |sample: Sample| {
-                if callback_activity.closed_at().is_some() {
-                    return;
-                }
-                let Some(attachment) = sample.attachment() else {
-                    warn!(
-                        "Ignoring Zenoh sample without zero-copy attachment [key expr: {}]",
-                        sample.key_expr()
-                    );
-                    return;
+                let receive = || {
+                    let _native = callback.enter();
+                    let Some(_callback) = callback_activity.enter_native_callback() else {
+                        return;
+                    };
+                    let Some(attachment) = sample.attachment() else {
+                        warn!(
+                            "Ignoring Zenoh sample without zero-copy attachment [key expr: {}]",
+                            sample.key_expr()
+                        );
+                        return;
+                    };
+                    if let Err(err) = ensure_strict_shm_payload(&sample) {
+                        warn!("Dropping non-SHM Zenoh zero-copy sample: {err:?}");
+                        return;
+                    }
+                    let frame = ZenohRxFrame::new(attachment.clone(), sample);
+                    callback_listener.push(frame);
                 };
-                if let Err(err) = ensure_strict_shm_payload(&sample) {
-                    warn!("Dropping non-SHM Zenoh zero-copy sample: {err:?}");
-                    return;
+                // Zenoh can call a local subscriber inline from an async put.
+                // The SDK native guard is synchronous; enter Tokio's supported
+                // blocking region so its admission lock is legal and other
+                // runtime workers can make progress during bounded sink work.
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    tokio::task::block_in_place(receive);
+                } else {
+                    receive();
                 }
-                let frame = ZenohRxFrame::new(attachment.clone(), sample);
-                callback_listener.push(frame);
             })
             .await
             .map_err(|err| {
@@ -671,14 +845,16 @@ impl ZenohZeroCopyCore {
                     format!("failed to register zero-copy listener: {err}"),
                 )
             })?;
-        listeners.insert((zenoh_key, comparable_listener), (subscriber, activity));
-        Ok(())
+        Ok(subscriber)
     }
 
     /// Closes and detaches the exact encoded dynamic sink.
     ///
     /// # Errors
     /// Reports missing registration, native retirement failure or quiescence timeout.
+    ///
+    /// # Panics
+    /// Panics if the internal listener registry was poisoned.
     pub async fn detach_encoded(
         &self,
         source_filter: &UUri,
@@ -688,10 +864,10 @@ impl ZenohZeroCopyCore {
         let zenoh_key = self
             .mechanics
             .to_zenoh_key_string(source_filter, sink_filter);
-        let (subscriber, activity) = self
+        let entry = self
             .subscriber_map
             .lock()
-            .await
+            .unwrap()
             .remove(&(
                 zenoh_key,
                 ComparableZeroCopyListener::new(Arc::clone(&listener)),
@@ -699,8 +875,11 @@ impl ZenohZeroCopyCore {
             .ok_or_else(|| {
                 UStatus::fail_with_code(UCode::NotFound, "zero-copy listener not registered")
             })?;
-        activity.cancel();
-        listener.close();
+        let subscriber = entry.close(
+            UStatus::fail_with_code(UCode::Cancelled, "dynamic listener removed"),
+            true,
+        );
+        let activity = &entry.activity;
         let deadline = activity
             .closed_at()
             .and_then(|closed| closed.checked_add(self.listener_quiesce_timeout))
@@ -712,20 +891,22 @@ impl ZenohZeroCopyCore {
         } else {
             activity.quiesce(deadline).await
         };
-        tokio::time::timeout_at(deadline, subscriber.undeclare())
-            .await
-            .map_err(|_| {
-                UStatus::fail_with_code(
-                    UCode::DeadlineExceeded,
-                    "Zenoh SHM listener retirement: QuiesceTimedOut",
-                )
-            })?
-            .map_err(|err| {
-                UStatus::fail_with_code(
-                    UCode::Internal,
-                    format!("failed to undeclare zero-copy listener: {err}"),
-                )
-            })?;
+        if let Some(subscriber) = subscriber {
+            tokio::time::timeout_at(deadline, subscriber.undeclare())
+                .await
+                .map_err(|_| {
+                    UStatus::fail_with_code(
+                        UCode::DeadlineExceeded,
+                        "Zenoh SHM listener retirement: QuiesceTimedOut",
+                    )
+                })?
+                .map_err(|err| {
+                    UStatus::fail_with_code(
+                        UCode::Internal,
+                        format!("failed to undeclare zero-copy listener: {err}"),
+                    )
+                })?;
+        }
         quiescence.map_err(|error| {
             UStatus::fail_with_code(
                 if matches!(error, up_rust::ListenerQuiesceError::QuiesceTimedOut) {
@@ -895,3 +1076,287 @@ impl PartialEq for ComparableZeroCopyListener {
 }
 
 impl Eq for ComparableZeroCopyListener {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        future::{poll_fn, Future},
+        sync::atomic::{AtomicBool, Ordering},
+        task::Poll,
+        time::Duration,
+    };
+    use up_rust::{
+        OverflowPolicy, PayloadEncoding, ProtobufWire, RegistrationConfig, RegistrationInbox,
+        UFrameFieldsMetadataCodec, UWireMetadataCodec, UWireMetadataContext,
+    };
+
+    fn topic() -> UUri {
+        UUri::try_from("//dynamic-lifecycle/4210/1/9000").unwrap()
+    }
+
+    async fn core() -> ZenohZeroCopyCore {
+        let mut config = zenoh::Config::default();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config
+            .insert_json5("scouting/gossip/enabled", "false")
+            .unwrap();
+        ZenohZeroCopyCore::builder("//dynamic-lifecycle/4210/1/0")
+            .with_config(config)
+            .with_shm_segment_size(1024 * 1024)
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    }
+
+    fn buffer(core: &ZenohZeroCopyCore, value: u64) -> ZenohTxBuffer {
+        let metadata = UFrameMetadata::publish(topic())
+            .with_payload_encoding(PayloadEncoding::RAW)
+            .build()
+            .unwrap();
+        let encoded = UFrameFieldsMetadataCodec
+            .encode_frame_metadata(
+                UWireMetadataContext::from_wire::<ProtobufWire, UFrameFieldsMetadataCodec>(),
+                &metadata,
+            )
+            .unwrap();
+        let mut buffer = core.loan_encoded(metadata, &encoded, 8, 8).unwrap();
+        buffer.payload_mut().copy_from_slice(&value.to_le_bytes());
+        buffer
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_pull_retains_first_shm_result_without_blocking_native_burst() {
+        let core = core().await;
+        let source = topic();
+        let mut receive = Box::pin(core.receive_encoded(&source, None));
+        assert!(poll_fn(|cx| Poll::Ready(receive.as_mut().poll(cx)))
+            .await
+            .is_pending());
+        for value in 0..512 {
+            core.publish_encoded(buffer(&core, value)).await.unwrap();
+        }
+        let frame = receive.await.unwrap();
+        assert!(frame.sample().payload().as_shm().is_some());
+        let publisher = core
+            .mechanics
+            .session()
+            .declare_publisher(core.mechanics.to_zenoh_key_string(&source, None))
+            .await
+            .unwrap();
+        assert!(!publisher.matching_status().await.unwrap().matching());
+        let mut cancelled = Box::pin(core.receive_encoded(&source, None));
+        assert!(poll_fn(|cx| Poll::Ready(cancelled.as_mut().poll(cx)))
+            .await
+            .is_pending());
+        drop(cancelled);
+        assert!(!publisher.matching_status().await.unwrap().matching());
+        drop(publisher);
+        drop(core);
+        assert_eq!(
+            up_rust::Frame::payload(&frame).unwrap().bytes(),
+            0u64.to_le_bytes()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_duplicate_registration_has_one_native_delivery_and_retirement() {
+        let core = core().await;
+        let inbox = Arc::new(
+            RegistrationInbox::new(RegistrationConfig {
+                capacity: 1,
+                overflow: OverflowPolicy::DropNewest,
+            })
+            .unwrap(),
+        );
+        let listener: Arc<dyn FrameSink<ZenohRxFrame>> = inbox.clone();
+        let source = topic();
+        let (left, right) = tokio::join!(
+            core.attach_encoded(&source, None, Arc::clone(&listener)),
+            core.attach_encoded(&source, None, Arc::clone(&listener)),
+        );
+        left.unwrap();
+        right.unwrap();
+        core.publish_encoded(buffer(&core, 0)).await.unwrap();
+        let frame = inbox.recv().await.unwrap();
+        assert_eq!(inbox.stats().admitted.load(Ordering::SeqCst), 1);
+        assert_eq!(inbox.stats().full.load(Ordering::SeqCst), 0);
+        core.detach_encoded(&source, None, listener).await.unwrap();
+        assert!(core.subscriber_map.lock().unwrap().is_empty());
+        drop(core);
+        assert_eq!(
+            up_rust::Frame::payload(&frame).unwrap().bytes(),
+            0u64.to_le_bytes()
+        );
+    }
+
+    struct ClosingSink(AtomicBool);
+    impl FrameSink<ZenohRxFrame> for ClosingSink {
+        fn push(&self, _: ZenohRxFrame) {}
+        fn close(&self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn failed_dynamic_setup_releases_entry_without_closing_callers_sink() {
+        let core = core().await;
+        let sink = Arc::new(ClosingSink(AtomicBool::new(false)));
+        core.mechanics.session().close().await.unwrap();
+        assert!(core
+            .attach_encoded(&topic(), None, sink.clone())
+            .await
+            .is_err());
+        assert!(core.subscriber_map.lock().unwrap().is_empty());
+        assert!(!sink.0.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_core_drop_closes_a_blocked_native_sink_without_revoking_prior_sample() {
+        let core = core().await;
+        let inbox = Arc::new(
+            RegistrationInbox::new(RegistrationConfig {
+                capacity: 1,
+                overflow: OverflowPolicy::Block {
+                    deadline: Duration::from_secs(1),
+                },
+            })
+            .unwrap(),
+        );
+        core.attach_encoded(&topic(), None, inbox.clone())
+            .await
+            .unwrap();
+        core.publish_encoded(buffer(&core, 0)).await.unwrap();
+        let session = Arc::clone(core.mechanics.session());
+        let next = buffer(&core, 1);
+        let (finished, received) = tokio::sync::oneshot::channel();
+        let producer = std::thread::spawn(move || {
+            session
+                .put(next.zenoh_key, next.payload.into_zbytes())
+                .attachment(next.attachment)
+                .priority(next.priority)
+                .wait()
+                .unwrap();
+            finished.send(()).unwrap();
+        });
+        tokio::time::timeout(Duration::from_millis(500), async {
+            while inbox.stats().blocked.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(core);
+        tokio::time::timeout(Duration::from_secs(2), received)
+            .await
+            .unwrap()
+            .unwrap();
+        producer.join().unwrap();
+        assert_eq!(inbox.stats().after_close.load(Ordering::SeqCst), 1);
+        assert_eq!(inbox.stats().deadline_expired.load(Ordering::SeqCst), 0);
+        let frame = inbox.recv().await.unwrap();
+        assert_eq!(
+            up_rust::Frame::payload(&frame).unwrap().bytes(),
+            0u64.to_le_bytes()
+        );
+    }
+
+    struct Observe(Arc<Mutex<Vec<u64>>>);
+    impl up_rust::RegistrationHandler<ZenohRxFrame> for Observe {
+        async fn on_receive(&mut self, frame: ZenohRxFrame) {
+            assert!(frame.sample().payload().as_shm().is_some());
+            let value = u64::from_le_bytes(
+                up_rust::Frame::payload(&frame)
+                    .unwrap()
+                    .bytes()
+                    .try_into()
+                    .unwrap(),
+            );
+            if value == 0 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            self.0.lock().unwrap().push(value);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_shm_native_sender_reaches_two_sdk_workers_in_fifo_order() {
+        const COUNT: usize = 1000;
+        let core = core().await;
+        let left = Arc::new(Mutex::new(Vec::with_capacity(COUNT)));
+        let right = Arc::new(Mutex::new(Vec::with_capacity(COUNT)));
+        let config = RegistrationConfig {
+            capacity: 4,
+            overflow: OverflowPolicy::Block {
+                deadline: Duration::from_secs(1),
+            },
+        };
+        let first = up_rust::Registration::new(config, Observe(Arc::clone(&left)), || {}).unwrap();
+        let second =
+            up_rust::Registration::new(config, Observe(Arc::clone(&right)), || {}).unwrap();
+        let first_sink: Arc<dyn FrameSink<ZenohRxFrame>> = first.inbox();
+        let second_sink: Arc<dyn FrameSink<ZenohRxFrame>> = second.inbox();
+        core.attach_encoded(&topic(), None, Arc::clone(&first_sink))
+            .await
+            .unwrap();
+        core.attach_encoded(&topic(), None, Arc::clone(&second_sink))
+            .await
+            .unwrap();
+        for value in 0..u64::try_from(COUNT).unwrap() {
+            core.publish_encoded(buffer(&core, value)).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        core.detach_encoded(&topic(), None, first_sink)
+            .await
+            .unwrap();
+        core.detach_encoded(&topic(), None, second_sink)
+            .await
+            .unwrap();
+        first.stop().await.unwrap();
+        second.stop().await.unwrap();
+        let expected: Vec<_> = (0..u64::try_from(COUNT).unwrap()).collect();
+        assert_eq!(*left.lock().unwrap(), expected);
+        assert_eq!(*right.lock().unwrap(), expected);
+    }
+
+    struct DirectPublication {
+        core: std::sync::Weak<ZenohZeroCopyCore>,
+        refused: AtomicBool,
+    }
+    impl FrameSink<ZenohRxFrame> for DirectPublication {
+        fn push(&self, frame: ZenohRxFrame) {
+            let core = self.core.upgrade().unwrap();
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(core.publish_encoded(buffer(&core, 99)))
+            });
+            self.refused.store(
+                matches!(result, Err(error) if error.code() == UCode::FailedPrecondition),
+                Ordering::SeqCst,
+            );
+            assert_eq!(
+                up_rust::Frame::payload(&frame).unwrap().bytes(),
+                0u64.to_le_bytes()
+            );
+        }
+        fn close(&self) {}
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_native_sink_refuses_synchronous_self_publication_before_put() {
+        let core = Arc::new(core().await);
+        let sink = Arc::new(DirectPublication {
+            core: Arc::downgrade(&core),
+            refused: AtomicBool::new(false),
+        });
+        core.attach_encoded(&topic(), None, sink.clone())
+            .await
+            .unwrap();
+        core.publish_encoded(buffer(&core, 0)).await.unwrap();
+        assert!(sink.refused.load(Ordering::SeqCst));
+        core.detach_encoded(&topic(), None, sink).await.unwrap();
+    }
+}

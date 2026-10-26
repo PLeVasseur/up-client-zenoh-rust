@@ -54,7 +54,7 @@ fn is_rpc_request_filter(source_filter: &UUri, sink_filter: Option<&UUri>) -> bo
 }
 
 impl UPTransportZenoh {
-    async fn put_message(
+    fn put_message(
         &self,
         zenoh_key: &str,
         payload: Bytes,
@@ -69,17 +69,21 @@ impl UPTransportZenoh {
         let priority =
             Self::map_zenoh_priority(attributes.priority().unwrap_or(up_rust::UPriority::CS1));
 
-        self.session
-            .put(zenoh_key, payload)
-            .priority(priority)
-            .attachment(attachment)
-            .await
-            .map_err(|err| {
-                UStatus::fail_with_code(
-                    UCode::Internal,
-                    format!("failed to put Zenoh message: {err}"),
-                )
-            })
+        let reserved = crate::dispatch::reserve_publication(&self.session, zenoh_key)?;
+        crate::dispatch::publish_reserved(reserved, || {
+            use zenoh::Wait;
+            self.session
+                .put(zenoh_key, payload)
+                .priority(priority)
+                .attachment(attachment)
+                .wait()
+        })
+        .map_err(|err| {
+            UStatus::fail_with_code(
+                UCode::Internal,
+                format!("failed to put Zenoh message: {err}"),
+            )
+        })
     }
 
     async fn send_response(
@@ -88,23 +92,15 @@ impl UPTransportZenoh {
         payload: Bytes,
         attributes: &UAttributes,
     ) -> Result<(), UStatus> {
-        let query = attributes.request_id().and_then(|request_id| {
-            self.query_map
-                .lock()
-                .unwrap()
-                .remove(&request_id.to_string())
-        });
-
-        let Some(query) = query else {
-            return self.put_message(zenoh_key, payload, attributes).await;
-        };
-
         let attachment = Self::uattributes_to_attachment(attributes).map_err(|err| {
             UStatus::fail_with_code(
                 UCode::InvalidArgument,
                 format!("Unable to transform UAttributes to attachment: {err}"),
             )
         })?;
+        let Some(query) = self.query_map.take_response(attributes)? else {
+            return self.put_message(zenoh_key, payload, attributes);
+        };
         query
             .reply(query.key_expr().clone(), payload)
             .attachment(attachment)
@@ -117,20 +113,12 @@ impl UPTransportZenoh {
             })
     }
 
-    async fn register_request_queryable(
-        &self,
+    pub(crate) async fn request_queryable(
+        session: &zenoh::Session,
         zenoh_key: &str,
-        listener: Arc<dyn UListener>,
-    ) -> Result<(), UStatus> {
-        let comparable_listener = ComparableListener::new(listener.clone());
-        let map_key = (zenoh_key.to_string(), comparable_listener.clone());
-        if self.queryable_map.lock().unwrap().contains_key(&map_key) {
-            return Ok(());
-        }
-
-        let query_map = self.query_map.clone();
-        let activity = Arc::new(up_rust::ListenerAdmission::new());
-        let callback_activity = Arc::clone(&activity);
+        dispatch: Arc<crate::dispatch::Dispatch<crate::pending_queries::MessageDelivery>>,
+        query_map: Arc<crate::pending_queries::PendingQueries>,
+    ) -> Result<zenoh::query::Queryable<()>, UStatus> {
         let callback = move |query: Query| {
             let Some(attachment) = query.attachment() else {
                 warn!("Ignoring Zenoh query without UAttributes attachment");
@@ -143,7 +131,12 @@ impl UPTransportZenoh {
                     return;
                 }
             };
-            if attributes.check_expired().is_err() {
+            if attributes.type_() != up_rust::UMessageType::Request
+                || UAttributesValidators::validator_for_attributes(&attributes)
+                    .validate(&attributes)
+                    .is_err()
+                || attributes.check_expired().is_err()
+            {
                 return;
             }
             let message = match message_from_parts(
@@ -160,59 +153,31 @@ impl UPTransportZenoh {
                     return;
                 }
             };
-            query_map
-                .lock()
-                .unwrap()
-                .insert(attributes.id().to_string(), query);
-            let listener = listener.clone();
-            let activity = Arc::clone(&callback_activity);
-            tokio::spawn(async move {
-                activity.dispatch(|| listener.on_receive(message)).await;
-            });
+            let Ok(admission) = query_map.insert(query, &attributes, dispatch.activity()) else {
+                return;
+            };
+            // The ticket moves with the queue item. Rejection, discard and
+            // cancellation drop it and roll back only this exact generation.
+            let deadline = admission.deadline();
+            dispatch.push_until(
+                crate::pending_queries::MessageDelivery {
+                    message,
+                    query: Some(admission),
+                },
+                Some(deadline),
+            );
         };
 
-        let queryable = self
-            .session
+        session
             .declare_queryable(zenoh_key)
-            .callback_mut(callback)
+            .callback(callback)
             .await
             .map_err(|err| {
                 UStatus::fail_with_code(
                     UCode::Internal,
                     format!("Unable to register Zenoh queryable: {err}"),
                 )
-            })?;
-        self.queryable_map
-            .lock()
-            .unwrap()
-            .insert(map_key, (queryable, activity));
-        Ok(())
-    }
-
-    async fn unregister_request_queryable(
-        &self,
-        zenoh_key: &str,
-        listener: Arc<dyn UListener>,
-    ) -> Result<(), UStatus> {
-        let removed = self
-            .queryable_map
-            .lock()
-            .unwrap()
-            .remove(&(zenoh_key.to_string(), ComparableListener::new(listener)));
-        let Some((queryable, activity)) = removed else {
-            return Err(UStatus::fail_with_code(
-                UCode::NotFound,
-                format!("No RPC listener registered for key expression: {zenoh_key}"),
-            ));
-        };
-        activity.stop().await;
-        queryable.undeclare().await.map_err(|error| {
-            UStatus::fail_with_code(
-                UCode::Internal,
-                format!("Unable to undeclare queryable: {error}"),
-            )
-        })?;
-        Ok(())
+            })
     }
 }
 
@@ -229,7 +194,7 @@ impl UTransport for UPTransportZenoh {
         if attributes.type_() == up_rust::UMessageType::Response {
             self.send_response(&zenoh_key, payload, &attributes).await
         } else {
-            self.put_message(&zenoh_key, payload, &attributes).await
+            self.put_message(&zenoh_key, payload, &attributes)
         }
     }
 
@@ -252,23 +217,11 @@ impl UTransport for UPTransportZenoh {
     ) -> Result<(), UStatus> {
         up_rust::verify_filter_criteria(source_filter, sink_filter).map_err(|err| *err)?;
         let zenoh_key = self.to_zenoh_key_string(source_filter, sink_filter);
+        let queries =
+            is_rpc_request_filter(source_filter, sink_filter).then(|| Arc::clone(&self.query_map));
         self.subscribers
-            .register_subscriber(zenoh_key.clone(), listener.clone())
-            .await?;
-
-        if is_rpc_request_filter(source_filter, sink_filter) {
-            if let Err(err) = self
-                .register_request_queryable(&zenoh_key, listener.clone())
-                .await
-            {
-                let _ = self
-                    .subscribers
-                    .unregister(&zenoh_key, ComparableListener::new(listener))
-                    .await;
-                return Err(err);
-            }
-        }
-        Ok(())
+            .register_subscriber(zenoh_key, listener, queries)
+            .await
     }
 
     async fn unregister_listener(
@@ -280,12 +233,7 @@ impl UTransport for UPTransportZenoh {
         up_rust::verify_filter_criteria(source_filter, sink_filter).map_err(|err| *err)?;
         let zenoh_key = self.to_zenoh_key_string(source_filter, sink_filter);
         self.subscribers
-            .unregister(&zenoh_key, ComparableListener::new(listener.clone()))
-            .await?;
-        if is_rpc_request_filter(source_filter, sink_filter) {
-            self.unregister_request_queryable(&zenoh_key, listener)
-                .await?;
-        }
-        Ok(())
+            .unregister(&zenoh_key, ComparableListener::new(listener))
+            .await
     }
 }

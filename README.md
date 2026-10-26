@@ -174,3 +174,28 @@ Native selected-wire cores may opt into construction-time provider initializatio
 with `ZenohZeroCopyCoreBuilder::with_shm_prewarm(true)`. The default remains lazy.
 See [SHM provider prewarming](docs/shm-prewarming.md) for native mapping/locking,
 setup failures and the distinction between configured size and measured residency.
+## Ordered classic subscriber dispatch
+
+Classic and owned subscribers use one setup-owned generic worker and a one-credit queue.
+Owned duplicate registrations share one pending/native registration. Owned pull
+receive completes one operation through a nonblocking one-shot slot.
+Dynamic SHM control registration also owns pending setup explicitly, and its pull
+receive retains only the first result's native lease. Transport destruction closes
+admission before native listener retirement.
+Synchronous publication back into an entered local native sink is refused before
+native put; registration-worker handlers remain the forwarding path.
+Local callback-originated sends and RPC queries reserve matching queue credit
+across transports sharing a session before native
+publication or return `ResourceExhausted`; unregister closes credit before drain.
+See [listener lifecycle](docs/listener-lifecycle.md) for ordering, reentry and the
+separate native SHM ownership contract.
+Classic request queryables share the registered listener's worker. Their query
+tickets roll back on failed or cancelled delivery; one setup-owned expiry task
+retires request correlations at their TTL, and unregister clears its queries.
+Responses must match the request's endpoints before consuming its native query.
+The RPC client validates response type, request ID and endpoints, preserves absent
+and present-empty payloads, and uses the original request deadline for reply waiting.
+Its one-shot reply slot accepts the first native response without blocking and
+discards duplicate responses.
+Dynamic SHM
+sinks account for entered native callbacks when waiting for quiescence.
