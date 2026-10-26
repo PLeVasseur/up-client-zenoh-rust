@@ -20,14 +20,13 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use async_trait::async_trait;
 use tracing::{trace, warn};
 use up_rust::{
-    LoanedPayload, PayloadAlignment, PayloadLoanProvenance, PreparedTxLoanSpec, UCode,
-    UEncodedLoanedRxFrame, UEncodedRxFrame, UEncodedZeroCopyListener, UFrameMetadata,
-    UNativePrefixWireTransport, UStatus, UTxBuffer, UUninitTxBuffer, UUri, UWire, UWireError,
-    UWithNativePrefixWire, UZeroCopyTransportCore, UZeroCopyUninitTransportCore,
+    FrameSink, LoanedPayload, PayloadLoanProvenance, UCode, UEncodedLoanedRxFrame, UEncodedRxFrame,
+    UFrameMetadata, UStatus, UTxBuffer, UUninitTxBuffer, UUri, UWireError,
 };
+#[cfg(feature = "benchmark-owned")]
+use up_rust::{UNativePrefixWireTransport, UWire, UWithNativePrefixWire};
 use zenoh::{
     bytes::{ZBytes, ZBytesReader, ZBytesSliceIterator},
     sample::Sample,
@@ -47,11 +46,11 @@ type ZeroCopySubscriberMap = Arc<
     >,
 >;
 
-/// Real Zenoh SHM zero-copy selected-wire transport core.
+/// Dynamic allocating Zenoh SHM control with selected-wire attachment carriage.
 ///
 /// `UPTransportZenoh` remains the ordinary product [`up_rust::UTransport`]
 /// implementation. This core owns a separate Zenoh transport instance for the
-/// generic selected-wire zero-copy adapter, carrying already encoded selected
+/// dynamic control, carrying already encoded selected
 /// wire metadata as Zenoh attachment bytes and admitting received payload bytes
 /// only when Zenoh reports SHM backing.
 /// Native unregister closes admission and waits up to the configured quiescence
@@ -119,13 +118,27 @@ impl ZenohZeroCopyCore {
         self.prewarmed_shm_segment_size
     }
 
-    /// Wraps this core in the generic selected-wire adapter.
+    /// Wraps this dynamic control's session in the owned selected-wire adapter.
+    ///
+    /// This allocating benchmark surface is separate from `ZenohPreparedCore`,
+    /// which carries metadata in SHM and uses synchronous prepared routes.
+    #[cfg(feature = "benchmark-owned")]
     #[must_use]
-    pub fn with_selected_wire<W>(self, wire: W) -> UNativePrefixWireTransport<Self, W>
+    pub fn with_selected_wire<W>(
+        self,
+        wire: W,
+    ) -> UNativePrefixWireTransport<crate::ZenohOwnedCore, W>
     where
         W: UWire,
     {
-        self.into_native_prefix_wire_transport(wire)
+        crate::ZenohOwnedCore::from_mechanics(self.mechanics)
+            .into_native_prefix_wire_transport(wire)
+    }
+
+    /// Returns the configured dynamic listener quiescence interval.
+    #[must_use]
+    pub fn listener_quiesce_timeout(&self) -> std::time::Duration {
+        self.listener_quiesce_timeout
     }
 }
 
@@ -431,14 +444,46 @@ impl UEncodedLoanedRxFrame for ZenohRxFrame {
     }
 }
 
-#[async_trait]
-impl UZeroCopyTransportCore for ZenohZeroCopyCore {
-    type Tx = ZenohTxBuffer;
-    type Rx = ZenohRxFrame;
+impl up_rust::Frame for ZenohRxFrame {
+    fn encoded_metadata(&self) -> &[u8] {
+        UEncodedRxFrame::encoded_metadata(self)
+    }
 
-    async fn loan_prepared_tx(&self, spec: PreparedTxLoanSpec) -> Result<Self::Tx, UStatus> {
-        let metadata = spec.metadata().clone();
-        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(&self.mechanics, &spec)?;
+    fn payload(&self) -> Option<LoanedPayload<'_>> {
+        let metadata = UEncodedRxFrame::encoded_metadata(self);
+        crate::prepared::header_view(metadata)?.payload_encoding?;
+        let payload = self.sample.payload();
+        let bytes = if payload.is_empty() {
+            &[]
+        } else {
+            payload.as_shm()?.as_ref()
+        };
+        Some(LoanedPayload::new(
+            bytes,
+            PayloadLoanProvenance::OpaqueTransportLoan,
+        ))
+    }
+}
+
+impl ZenohZeroCopyCore {
+    /// Creates an allocating-control SHM loan with selected-wire attachment bytes.
+    ///
+    /// # Errors
+    /// Rejects invalid payload presence/alignment or unavailable native SHM storage.
+    pub fn loan_encoded(
+        &self,
+        metadata: UFrameMetadata,
+        encoded_metadata: &[u8],
+        payload_len: usize,
+        alignment: usize,
+    ) -> Result<ZenohTxBuffer, UStatus> {
+        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(
+            &self.mechanics,
+            &metadata,
+            encoded_metadata,
+            payload_len,
+            alignment,
+        )?;
         Ok(ZenohTxBuffer {
             metadata,
             zenoh_key,
@@ -448,7 +493,11 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         })
     }
 
-    async fn send_prepared_zero_copy(&self, buffer: Self::Tx) -> Result<(), UStatus> {
+    /// Publishes an allocating control loan, optionally waiting for native matching.
+    ///
+    /// # Errors
+    /// Reports native publisher/matching/publication failure or the readiness deadline.
+    pub async fn publish_encoded(&self, buffer: ZenohTxBuffer) -> Result<(), UStatus> {
         if let Some(timeout) = self.publisher_readiness_timeout {
             let deadline = tokio::time::Instant::now()
                 .checked_add(timeout)
@@ -528,11 +577,15 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         Ok(())
     }
 
-    async fn receive_encoded_zero_copy(
+    /// Receives an allocating-control sample retaining its native SHM lease.
+    ///
+    /// # Errors
+    /// Reports declaration/receive failure or a non-SHM payload.
+    pub async fn receive_encoded(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
-    ) -> Result<Self::Rx, UStatus> {
+    ) -> Result<ZenohRxFrame, UStatus> {
         let zenoh_key = self
             .mechanics
             .to_zenoh_key_string(source_filter, sink_filter);
@@ -567,11 +620,15 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         }
     }
 
-    async fn register_encoded_zero_copy_listener(
+    /// Attaches an encoded sink to the dynamic allocating control.
+    ///
+    /// # Errors
+    /// Reports failure to declare the native subscriber.
+    pub async fn attach_encoded(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
-        listener: Arc<dyn UEncodedZeroCopyListener<Self::Rx>>,
+        listener: Arc<dyn FrameSink<ZenohRxFrame>>,
     ) -> Result<(), UStatus> {
         let zenoh_key = self
             .mechanics
@@ -605,13 +662,7 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
                     return;
                 }
                 let frame = ZenohRxFrame::new(attachment.clone(), sample);
-                let listener = callback_listener.clone();
-                let activity = Arc::clone(&callback_activity);
-                tokio::spawn(async move {
-                    activity
-                        .dispatch(|| listener.on_receive_encoded_zero_copy(frame))
-                        .await;
-                });
+                callback_listener.push(frame);
             })
             .await
             .map_err(|err| {
@@ -624,11 +675,15 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
         Ok(())
     }
 
-    async fn unregister_encoded_zero_copy_listener(
+    /// Closes and detaches the exact encoded dynamic sink.
+    ///
+    /// # Errors
+    /// Reports missing registration, native retirement failure or quiescence timeout.
+    pub async fn detach_encoded(
         &self,
         source_filter: &UUri,
         sink_filter: Option<&UUri>,
-        listener: Arc<dyn UEncodedZeroCopyListener<Self::Rx>>,
+        listener: Arc<dyn FrameSink<ZenohRxFrame>>,
     ) -> Result<(), UStatus> {
         let zenoh_key = self
             .mechanics
@@ -637,11 +692,15 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
             .subscriber_map
             .lock()
             .await
-            .remove(&(zenoh_key, ComparableZeroCopyListener::new(listener)))
+            .remove(&(
+                zenoh_key,
+                ComparableZeroCopyListener::new(Arc::clone(&listener)),
+            ))
             .ok_or_else(|| {
                 UStatus::fail_with_code(UCode::NotFound, "zero-copy listener not registered")
             })?;
         activity.cancel();
+        listener.close();
         let deadline = activity
             .closed_at()
             .and_then(|closed| closed.checked_add(self.listener_quiesce_timeout))
@@ -681,16 +740,25 @@ impl UZeroCopyTransportCore for ZenohZeroCopyCore {
     }
 }
 
-#[async_trait]
-impl UZeroCopyUninitTransportCore for ZenohZeroCopyCore {
-    type UninitTx = ZenohUninitTxBuffer;
-
-    async fn loan_prepared_uninit_tx(
+impl ZenohZeroCopyCore {
+    /// Creates an allocating SHM control loan for typed payload initialization.
+    ///
+    /// # Errors
+    /// Rejects invalid payload presence/alignment or unavailable native SHM storage.
+    pub fn loan_encoded_uninit(
         &self,
-        spec: PreparedTxLoanSpec,
-    ) -> Result<Self::UninitTx, UStatus> {
-        let metadata = spec.metadata().clone();
-        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(&self.mechanics, &spec)?;
+        metadata: UFrameMetadata,
+        encoded_metadata: &[u8],
+        payload_len: usize,
+        alignment: usize,
+    ) -> Result<ZenohUninitTxBuffer, UStatus> {
+        let (zenoh_key, attachment, priority, payload) = reserve_tx_parts(
+            &self.mechanics,
+            &metadata,
+            encoded_metadata,
+            payload_len,
+            alignment,
+        )?;
         Ok(ZenohUninitTxBuffer {
             metadata,
             zenoh_key,
@@ -703,31 +771,37 @@ impl UZeroCopyUninitTransportCore for ZenohZeroCopyCore {
 
 fn reserve_tx_parts(
     transport: &ZenohWireMechanics,
-    spec: &PreparedTxLoanSpec,
+    metadata: &UFrameMetadata,
+    encoded_metadata: &[u8],
+    payload_len: usize,
+    alignment: usize,
 ) -> Result<(String, ZBytes, zenoh::qos::Priority, ZenohTxPayload), UStatus> {
-    let payload_alignment = spec.payload_alignment_proof();
-    if !spec.has_payload() && spec.payload_len() != 0 {
+    if metadata.payload_encoding().is_none() && payload_len != 0 {
         return Err(UStatus::fail_with_code(
             UCode::InvalidArgument,
             "message payload is present but payload encoding is absent",
         ));
     }
-    let metadata = spec.metadata();
     let zenoh_key = transport.to_zenoh_key_string(metadata.source(), metadata.sink());
-    let attachment = ZBytes::from(spec.encoded_metadata().to_vec());
+    let attachment = ZBytes::from(encoded_metadata.to_vec());
     let priority = crate::mechanics::map_zenoh_priority(
         metadata.priority().unwrap_or(up_rust::UPriority::CS1),
     );
-    let payload = reserve_payload(transport, spec.payload_len(), payload_alignment)?;
+    let payload = reserve_payload(transport, payload_len, alignment)?;
     Ok((zenoh_key, attachment, priority, payload))
 }
 
 fn reserve_payload(
     transport: &ZenohWireMechanics,
     payload_len: usize,
-    alignment: PayloadAlignment,
+    alignment: usize,
 ) -> Result<ZenohTxPayload, UStatus> {
-    let alignment = alignment.as_usize();
+    if !alignment.is_power_of_two() {
+        return Err(UStatus::fail_with_code(
+            UCode::InvalidArgument,
+            "payload alignment must be a nonzero power of two",
+        ));
+    }
     if payload_len == 0 {
         return Ok(ZenohTxPayload::Empty);
     }
@@ -787,11 +861,11 @@ fn ensure_strict_shm_payload(sample: &Sample) -> Result<(), UStatus> {
 
 #[derive(Clone)]
 pub(crate) struct ComparableZeroCopyListener {
-    listener: Arc<dyn UEncodedZeroCopyListener<ZenohRxFrame>>,
+    listener: Arc<dyn FrameSink<ZenohRxFrame>>,
 }
 
 impl ComparableZeroCopyListener {
-    fn new(listener: Arc<dyn UEncodedZeroCopyListener<ZenohRxFrame>>) -> Self {
+    fn new(listener: Arc<dyn FrameSink<ZenohRxFrame>>) -> Self {
         Self { listener }
     }
 
@@ -801,7 +875,7 @@ impl ComparableZeroCopyListener {
 }
 
 impl Deref for ComparableZeroCopyListener {
-    type Target = dyn UEncodedZeroCopyListener<ZenohRxFrame>;
+    type Target = dyn FrameSink<ZenohRxFrame>;
 
     fn deref(&self) -> &Self::Target {
         &*self.listener

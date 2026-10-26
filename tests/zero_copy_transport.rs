@@ -20,12 +20,14 @@ use std::{io::Read, marker::PhantomData, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use serial_test::serial;
 use tokio::sync::mpsc;
+#[path = "support/allocating_control.rs"]
+mod control;
+use control::{Listener, WithControlWire};
 use up_rust::{
-    NativePrefixFrameMetadataCodec, PayloadCodecIdentity, PayloadEncoding, PayloadLoanProvenance,
-    ProtobufWire, UCode, UEncodedLoanedRxFrame, UFrameMetadata, UFrameView, UProtocolNativeWire,
-    UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri, UWire, UWireMetadataCodec, UWireRx,
-    UZeroCopyListener, UZeroCopyTransportImpl, UZeroCopyUninitTransportImpl, WireIdentity,
-    NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, PROTOBUF_WIRE_ID,
+    PayloadCodecIdentity, PayloadEncoding, PayloadLoanProvenance, ProtobufWire, UCode,
+    UEncodedLoanedRxFrame, UFrameFieldsMetadataCodec, UFrameMetadata, UFrameView,
+    UProtocolNativeWire, UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri, UWire, UWireMetadataCodec,
+    UWireRx, WireIdentity, NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, PROTOBUF_WIRE_ID,
 };
 use up_transport_zenoh::{zenoh_config, ZenohRxFrame, ZenohZeroCopyCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -186,7 +188,7 @@ where
     W: UWire + Default + Send + Sync + 'static,
 {
     let authority = format!("zenoh-zcs-loan-{}-{}", std::process::id(), payload.len());
-    let transport = test_core(&authority).await.with_selected_wire(W::default());
+    let transport = test_core(&authority).await.with_control_wire(W::default());
 
     let metadata = metadata(topic(), payload_encoding);
     let spec = if payload.is_empty() {
@@ -204,9 +206,9 @@ where
 
     let attachment = tx.attachment_bytes();
     assert_eq!(
-        NativePrefixFrameMetadataCodec
+        UFrameFieldsMetadataCodec
             .decode_frame_metadata(
-                up_rust::UWireMetadataContext::from_wire::<W, NativePrefixFrameMetadataCodec>(),
+                up_rust::UWireMetadataContext::from_wire::<W, UFrameFieldsMetadataCodec>(),
                 &attachment
             )
             .expect("decode metadata"),
@@ -219,7 +221,7 @@ where
 #[serial]
 async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-rx-{}", std::process::id());
-    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let transport = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let source = topic_for(&authority, 0x9300);
     let receiver = transport.clone();
     let receive_source = source.clone();
@@ -259,7 +261,7 @@ async fn receive_zero_copy_returns_shm_payload_lease() -> Result<(), TestError> 
 #[serial]
 async fn zero_copy_listener_fanout_delivers_rx_leases() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-listener-{}", std::process::id());
-    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let transport = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let source = topic_for(&authority, 0x9301);
     let wildcard = source_wildcard(&authority);
     let (exact_tx, mut exact_rx) = mpsc::unbounded_channel();
@@ -306,7 +308,7 @@ async fn zero_copy_listener_fanout_delivers_rx_leases() -> Result<(), TestError>
 async fn zero_copy_unregister_listener_removes_exact_and_wildcard_listeners(
 ) -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-unregister-{}", std::process::id());
-    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let transport = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let source = topic_for(&authority, 0x9306);
     let wildcard = source_wildcard(&authority);
     let (exact_tx, mut exact_rx) = mpsc::unbounded_channel();
@@ -370,7 +372,7 @@ async fn zero_copy_unregister_listener_removes_exact_and_wildcard_listeners(
 #[serial]
 async fn zero_copy_uninit_transmit_uses_selected_wire_metadata() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-uninit-{}", std::process::id());
-    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let transport = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let source = topic_for(&authority, 0x9302);
     let receiver = transport.clone();
     let receive_source = source.clone();
@@ -404,11 +406,11 @@ async fn zero_copy_uninit_transmit_uses_selected_wire_metadata() -> Result<(), T
 async fn zero_copy_wrong_wire_metadata_is_rejected_before_pull_receive_exposes_frame(
 ) -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-wrong-wire-{}", std::process::id());
-    let sender = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let sender = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let receiver = Arc::new(
         test_core(&authority)
             .await
-            .with_selected_wire(UProtocolNativeWire),
+            .with_control_wire(UProtocolNativeWire),
     );
     let source = topic_for(&authority, 0x9303);
     let receive_source = source.clone();
@@ -442,9 +444,9 @@ async fn zero_copy_payload_family_mismatch_is_rejected_before_pull_receive_expos
     let sender = Arc::new(
         test_core(&authority)
             .await
-            .with_selected_wire(ProtobufWireWithNativePayloadFamily),
+            .with_control_wire(ProtobufWireWithNativePayloadFamily),
     );
-    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let receiver = test_core(&authority).await.with_control_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9307);
     let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
     let receive_source = source.clone();
@@ -474,11 +476,11 @@ async fn zero_copy_payload_family_mismatch_is_rejected_before_pull_receive_expos
 async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame(
 ) -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-non-shm-{}", std::process::id());
-    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let receiver = test_core(&authority).await.with_control_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9308);
     let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
-    let attachment = NativePrefixFrameMetadataCodec.encode_frame_metadata(
-        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(),
+    let attachment = UFrameFieldsMetadataCodec.encode_frame_metadata(
+        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, UFrameFieldsMetadataCodec>(),
         &metadata,
     )?;
     let receive_source = source.clone();
@@ -502,11 +504,11 @@ async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame
 #[serial]
 async fn zero_copy_malformed_listener_metadata_is_not_delivered() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-listener-drop-{}", std::process::id());
-    let sender = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let sender = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let receiver = Arc::new(
         test_core(&authority)
             .await
-            .with_selected_wire(UProtocolNativeWire),
+            .with_control_wire(UProtocolNativeWire),
     );
     let source = topic_for(&authority, 0x9304);
     let (dropped_tx, mut dropped_rx) = mpsc::unbounded_channel();
@@ -541,7 +543,7 @@ async fn zero_copy_malformed_listener_metadata_is_not_delivered() -> Result<(), 
 #[serial]
 async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-listener-non-shm-{}", std::process::id());
-    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let receiver = test_core(&authority).await.with_control_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9309);
     let (dropped_tx, mut dropped_rx) = mpsc::unbounded_channel();
 
@@ -558,8 +560,10 @@ async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), Tes
     publish_raw_zenoh(
         &source,
         None,
-        NativePrefixFrameMetadataCodec
-            .encode_frame_metadata(up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(), &metadata)?,
+        UFrameFieldsMetadataCodec.encode_frame_metadata(
+            up_rust::UWireMetadataContext::from_wire::<ProtobufWire, UFrameFieldsMetadataCodec>(),
+            &metadata,
+        )?,
         b"not-shm-listener",
     )
     .await?;
@@ -578,7 +582,7 @@ async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), Tes
 async fn zero_copy_sink_filter_mismatch_is_not_delivered_to_pull_receive() -> Result<(), TestError>
 {
     let authority = format!("zenoh-zcs-sink-filter-{}", std::process::id());
-    let transport = Arc::new(test_core(&authority).await.with_selected_wire(ProtobufWire));
+    let transport = Arc::new(test_core(&authority).await.with_control_wire(ProtobufWire));
     let source = topic_for(&authority, 0x930A);
     let matching_sink = sink(&authority, 0);
     let nonmatching_sink = sink(&format!("{authority}-other"), 0);
@@ -613,8 +617,8 @@ async fn zero_copy_sink_filter_mismatch_is_not_delivered_to_pull_receive() -> Re
 #[serial]
 async fn zero_copy_external_xcdrv2_wrong_wire_metadata_is_rejected() -> Result<(), TestError> {
     let authority = format!("zenoh-zcs-xcdr-wrong-wire-{}", std::process::id());
-    let sender = Arc::new(test_core(&authority).await.with_selected_wire(XcdrV2Wire));
-    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let sender = Arc::new(test_core(&authority).await.with_control_wire(XcdrV2Wire));
+    let receiver = test_core(&authority).await.with_control_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9305);
     let receive_source = source.clone();
     let receive_task = tokio::spawn(async move {
@@ -648,7 +652,7 @@ async fn zero_copy_external_xcdrv2_wrong_wire_metadata_is_rejected() -> Result<(
 #[serial]
 async fn native_loans_retain_storage_after_transport_drop() -> Result<(), TestError> {
     let authority = format!("zenoh-loan-owner-{}", std::process::id());
-    let transport = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let transport = test_core(&authority).await.with_control_wire(ProtobufWire);
     let spec = || {
         UTxLoanSpec::payload(
             metadata(
@@ -690,7 +694,7 @@ async fn publisher_readiness_waits_for_actual_wildcard_peer_and_retains_shm(
             .with_publisher_readiness(Duration::from_secs(5))?
             .build()
             .await?
-            .with_selected_wire(ProtobufWire),
+            .with_control_wire(ProtobufWire),
     );
     let source = topic_for(&authority, 0x9500);
     let mut loan = sender
@@ -706,7 +710,7 @@ async fn publisher_readiness_waits_for_actual_wildcard_peer_and_retains_shm(
     assert!(tokio::time::timeout(Duration::from_millis(60), &mut send)
         .await
         .is_err());
-    let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let receiver = test_core(&authority).await.with_control_wire(ProtobufWire);
     let filter = source_wildcard(&authority);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let listener = Arc::new(RetainedFrameSender(tx));
@@ -742,7 +746,7 @@ async fn publisher_readiness_timeout_does_not_publish_to_a_later_peer() -> Resul
         .with_publisher_readiness(Duration::from_millis(80))?
         .build()
         .await?
-        .with_selected_wire(ProtobufWire);
+        .with_control_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9501);
     let wrong_source = topic_for(&authority, 0x9503);
     let (wrong_tx, mut wrong_rx) = mpsc::unbounded_channel();
@@ -798,7 +802,7 @@ async fn publisher_readiness_cancellation_releases_wait_and_rejects_invalid_dead
             .with_publisher_readiness(Duration::from_secs(5))?
             .build()
             .await?
-            .with_selected_wire(ProtobufWire),
+            .with_control_wire(ProtobufWire),
     );
     let source = topic_for(&authority, 0x9502);
     for _ in 0..3 {
@@ -821,8 +825,8 @@ async fn publisher_readiness_cancellation_releases_wait_and_rejects_invalid_dead
 }
 
 #[async_trait]
-impl UZeroCopyListener<NativePrefixRx<ProtobufWire>> for RetainedFrameSender {
-    async fn on_receive_zero_copy(&self, frame: NativePrefixRx<ProtobufWire>) {
+impl Listener<NativePrefixRx<ProtobufWire>> for RetainedFrameSender {
+    async fn on_frame(&self, frame: NativePrefixRx<ProtobufWire>) {
         self.0.send(frame).expect("retained-frame receiver");
     }
 }
@@ -832,7 +836,7 @@ impl UZeroCopyListener<NativePrefixRx<ProtobufWire>> for RetainedFrameSender {
 async fn listener_lease_retains_native_storage_after_unregister_and_drop() -> Result<(), TestError>
 {
     let authority = format!("zenoh-listener-owner-{}", std::process::id());
-    let transport = test_core(&authority).await.with_selected_wire(ProtobufWire);
+    let transport = test_core(&authority).await.with_control_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9401);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let listener = Arc::new(RetainedFrameSender(tx));
@@ -868,7 +872,7 @@ struct PayloadSender<W> {
     _wire: PhantomData<W>,
 }
 
-type NativePrefixRx<W> = UWireRx<ZenohRxFrame, W, NativePrefixFrameMetadataCodec>;
+type NativePrefixRx<W> = UWireRx<ZenohRxFrame, W, UFrameFieldsMetadataCodec>;
 
 impl<W> PayloadSender<W> {
     fn new(sender: mpsc::UnboundedSender<Vec<u8>>) -> Self {
@@ -880,11 +884,11 @@ impl<W> PayloadSender<W> {
 }
 
 #[async_trait]
-impl<W> UZeroCopyListener<NativePrefixRx<W>> for PayloadSender<W>
+impl<W> Listener<NativePrefixRx<W>> for PayloadSender<W>
 where
     W: UWire + Send + Sync + 'static,
 {
-    async fn on_receive_zero_copy(&self, frame: NativePrefixRx<W>) {
+    async fn on_frame(&self, frame: NativePrefixRx<W>) {
         let mut payload = Vec::new();
         frame
             .payload_reader()

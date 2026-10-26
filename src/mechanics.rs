@@ -6,19 +6,23 @@
 
 use std::str::FromStr;
 
+#[cfg(any(feature = "zero-copy", feature = "benchmark-owned"))]
+use std::sync::Arc;
 #[cfg(feature = "zero-copy")]
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use tracing::error;
 use up_rust::{UCode, UPriority, UStatus, UUri};
 use zenoh::qos::Priority;
+#[cfg(any(feature = "zero-copy", feature = "benchmark-owned"))]
+use zenoh::Session;
 #[cfg(feature = "zero-copy")]
 use zenoh::{
     shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder},
-    Session, Wait,
+    Wait,
 };
 
 #[cfg(feature = "zero-copy")]
-type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
+pub(crate) type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
 #[cfg(feature = "zero-copy")]
 type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 
@@ -26,15 +30,17 @@ type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 pub(crate) const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
-#[cfg(feature = "zero-copy")]
+#[cfg(any(feature = "zero-copy", feature = "benchmark-owned"))]
 pub(crate) struct ZenohWireMechanics {
     session: Arc<Session>,
     uri: UUri,
+    #[cfg(feature = "zero-copy")]
     shm_segment_size: usize,
+    #[cfg(feature = "zero-copy")]
     shm_provider: Arc<OnceLock<ZenohShmProviderInit>>,
 }
 
-#[cfg(feature = "zero-copy")]
+#[cfg(any(feature = "zero-copy", feature = "benchmark-owned"))]
 impl ZenohWireMechanics {
     pub(crate) async fn new(
         config: crate::zenoh_config::Config,
@@ -53,7 +59,9 @@ impl ZenohWireMechanics {
         Ok(Self {
             session: Arc::new(session),
             uri,
+            #[cfg(feature = "zero-copy")]
             shm_segment_size: DEFAULT_SHM_SEGMENT_SIZE,
+            #[cfg(feature = "zero-copy")]
             shm_provider: Arc::new(OnceLock::new()),
         })
     }
@@ -66,6 +74,7 @@ impl ZenohWireMechanics {
         to_zenoh_key_string(&self.uri, src_uri, dst_uri)
     }
 
+    #[cfg(feature = "zero-copy")]
     pub(crate) fn set_shm_segment_size(&mut self, shm_segment_size: usize) -> Result<(), UStatus> {
         if shm_segment_size == 0 {
             return Err(UStatus::fail_with_code(
@@ -77,6 +86,7 @@ impl ZenohWireMechanics {
         Ok(())
     }
 
+    #[cfg(feature = "zero-copy")]
     pub(crate) fn shm_provider(&self) -> Result<Arc<ZenohShmProvider>, UStatus> {
         self.shm_provider
             .get_or_init(|| {
@@ -94,6 +104,7 @@ impl ZenohWireMechanics {
             })
     }
 
+    #[cfg(feature = "zero-copy")]
     pub(crate) fn prewarm_shm(&self) -> Result<usize, UStatus> {
         self.shm_provider()?;
         Ok(self.shm_segment_size)

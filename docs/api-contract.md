@@ -6,11 +6,21 @@ or existing session. `ZenohRpcClient` implements the SDK RPC client contract usi
 queries and replies through that transport; it does not choose a payload codec
 from incoming bytes.
 
-The selected-wire SHM core separates initialized `ZenohTxBuffer` and uninitialized
+The dynamic allocating SHM control separates initialized `ZenohTxBuffer` and uninitialized
 `ZenohUninitTxBuffer` publication paths. Each owns its payload allocation and
 metadata attachment through publication. `ZenohRxFrame` retains the native sample
 and encoded metadata; `sample()` returns a borrow bounded by that frame's lifetime.
 SDK selected-wire validation remains above the physical carriage layer.
+
+Native prepared applications instead reserve `ZenohPreparedCore` routes, provider
+and registration capacities before traffic. `new` opens a session; `from_session`
+retains an existing shared native session. `ZenohPreparedTx` exposes checked,
+disjoint in-SHM extents; `ZenohPreparedRx` retains the actual native sample.
+Synchronous TX and generic SDK inbox/worker delivery replace per-message tasks.
+See [prepared SHM routes](prepared.md) for placement, capacities, source-scoped
+allocation observations, shared-session closure and native token wiping limits.
+The binding's `zero-copy` feature enables SDK inline URI storage. Default classic
+builds and owned-only support retain String storage and require no SHM provider.
 
 `ZenohZeroCopyCoreBuilder::with_shm_prewarm(true)` optionally initializes the actual
 provider before returning the core, delegating mapping and locking to Zenoh.

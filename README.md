@@ -2,10 +2,21 @@
 
 This crate implements the Zenoh transport as specified in [uProtocol v1.6.0-alpha.7](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/zenoh.adoc).
 
-The selected-wire SHM core supports bounded listener quiescence, re-entrant
-self-unregister and ownership-safe timeout (five seconds by default). Its builder
-can set the interval. See [listener lifecycle](docs/listener-lifecycle.md); the
-classic `UPTransportZenoh` registry retains its existing contract.
+Native prepared applications use `ZenohPreparedCore` with a finite route catalog,
+an eagerly initialized SHM provider and generic SDK registrations. Metadata and
+payload remain in the same native SHM chunk; publication is synchronous and each
+native callback pushes directly into its SDK inbox. See the
+[prepared SHM guide](docs/prepared.md) for capacities, placement, allocation
+observations and native ownership.
+`from_session` permits shared native-session setup while keeping each core's
+provider and finite route/registration capacities explicit.
+The `zero-copy` feature enables the SDK's inline URI storage. Default classic
+builds retain its String-backed URI storage; owned support does not require SHM.
+
+`ZenohZeroCopyCore` is a dynamic allocating SHM control with attachment-based
+metadata; its feature-gated selected-wire wrapper uses the owned support adapter.
+Its bounded retirement interval defaults to five seconds. See
+[listener lifecycle](docs/listener-lifecycle.md) for that separate control contract.
 
 ## Build
 
@@ -17,7 +28,10 @@ Public items and targets use `missing_docs = "deny"`. See the
 contracts, with links to this binding's placement and lifecycle guides.
 SDK-facing frame/message priorities share `UPriority`, and checked projections
 preserve each sample's encoding and payload presence. The metadata codec supplies
-layout identity; SHM loan views retain their native sample without payload copying.
+layout identity; prepared SHM views retain their actual native sample without
+payload copying. An optional setup-installed allocation observer scopes our code
+and suspends only native middleware calls, re-entering every callback. Whole-process
+counts include middleware and observer costs; they are reported separately.
 
 ```shell
 # Check clippy

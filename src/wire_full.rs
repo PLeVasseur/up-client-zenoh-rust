@@ -10,12 +10,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::{trace, warn};
-use up_rust::selected_wire_user_api::{UNativePrefixWireTransport, UWithNativePrefixWire};
-use up_rust::transport_implementer_api::{
-    EncodedOwnedFrame, PreparedOwnedFrame, UEncodedOwnedListener, UOwnedTransportCore,
-};
-use up_rust::wire_implementer_api::UWire;
+use up_rust::UWire;
+use up_rust::{EncodedOwnedFrame, PreparedOwnedFrame, UEncodedOwnedListener, UOwnedTransportCore};
 use up_rust::{UCode, UStatus, UUri};
+use up_rust::{UNativePrefixWireTransport, UWithNativePrefixWire};
 use zenoh::{bytes::ZBytes, sample::Sample};
 
 use crate::mechanics::ZenohWireMechanics;
@@ -34,6 +32,12 @@ pub struct ZenohOwnedCore {
 }
 
 impl ZenohOwnedCore {
+    pub(crate) fn from_mechanics(mechanics: ZenohWireMechanics) -> Self {
+        Self {
+            mechanics,
+            listeners: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
     /// Creates a real Zenoh owned-frame core.
     ///
     /// # Errors
@@ -43,10 +47,9 @@ impl ZenohOwnedCore {
         config: crate::zenoh_config::Config,
         uri: impl Into<String>,
     ) -> Result<Self, UStatus> {
-        Ok(Self {
-            mechanics: ZenohWireMechanics::new(config, uri).await?,
-            listeners: Arc::new(Mutex::new(Vec::new())),
-        })
+        Ok(Self::from_mechanics(
+            ZenohWireMechanics::new(config, uri).await?,
+        ))
     }
 
     /// Wraps this core in the generic selected-wire adapter.
@@ -238,13 +241,54 @@ fn sample_to_encoded_owned(sample: &Sample) -> Option<EncodedOwnedFrame> {
         );
         return None;
     };
-    let payload = if sample.payload().is_empty() {
-        None
-    } else {
+    let payload = if payload_present(attachment.to_bytes().as_ref())? {
         Some(Bytes::copy_from_slice(sample.payload().to_bytes().as_ref()))
+    } else {
+        if !sample.payload().is_empty() {
+            return None;
+        }
+        None
     };
     Some(EncodedOwnedFrame::new(
         attachment.to_bytes().to_vec(),
         payload,
     ))
+}
+
+// Locate the canonical field block to preserve absent versus present-empty
+// carriage. This is not wire/family compatibility or typed native admission;
+// the SDK selected-wire adapter independently validates the complete prefix.
+fn payload_present(bytes: &[u8]) -> Option<bool> {
+    fn identity_end(bytes: &[u8], start: usize) -> Option<usize> {
+        let end = match *bytes.get(start)? {
+            0 => start.checked_add(3)?,
+            1 => {
+                let word_end = start.checked_add(5)?;
+                let len =
+                    u32::from_le_bytes(bytes.get(start + 1..word_end)?.try_into().ok()?) as usize;
+                word_end.checked_add(len)?
+            }
+            _ => return None,
+        };
+        bytes.get(..end)?;
+        Some(end)
+    }
+    if bytes.get(..4)? != b"UPWM" {
+        return None;
+    }
+    let mut end = identity_end(bytes, 4)?.checked_add(2)?;
+    end = identity_end(bytes, end)?;
+    end = identity_end(bytes, end)?.checked_add(2)?;
+    let word_end = end.checked_add(4)?;
+    let len = u32::from_le_bytes(bytes.get(end..word_end)?.try_into().ok()?) as usize;
+    let field_end = word_end.checked_add(len)?;
+    if field_end != bytes.len() {
+        return None;
+    }
+    Some(
+        up_rust::frame::codec::decode_frame_metadata_fields(bytes.get(word_end..field_end)?)
+            .ok()?
+            .payload_encoding()
+            .is_some(),
+    )
 }

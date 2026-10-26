@@ -1,8 +1,13 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
+// SPDX-License-Identifier: Apache-2.0
 //! Real provider page residency, prewarming failure and released-capacity checks.
 
 #![cfg(feature = "zero-copy")]
 
-use up_rust::{UCode, UFrameMetadata, UTxBuffer, UTxLoanSpec, UUri, UZeroCopyTransportImpl};
+#[path = "support/allocating_control.rs"]
+mod control;
+use control::WithControlWire;
+use up_rust::{UCode, UFrameMetadata, UTxBuffer, UTxLoanSpec, UUri};
 use up_transport_zenoh::ZenohZeroCopyCore;
 
 #[tokio::test]
@@ -98,7 +103,7 @@ async fn real_provider_prewarming_materializes_full_mapping_and_releases_capacit
                 .await
                 .unwrap();
             assert_eq!(core.prewarmed_shm_segment_size(), enabled.then_some(bytes));
-            let transport = core.with_selected_wire(up_rust::ProtobufWire);
+            let transport = core.with_control_wire(up_rust::ProtobufWire);
             let source = UUri::try_from_parts(&authority, 0x4210, 1, 0x9000).unwrap();
             for iteration in 0..3 {
                 let metadata = UFrameMetadata::publish(source.clone())

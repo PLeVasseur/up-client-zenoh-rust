@@ -11,13 +11,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serial_test::serial;
 use tokio::sync::mpsc;
-use up_rust::selected_wire_user_api::UNativePrefixWireTransport;
-use up_rust::wire_implementer_api::{
-    NativePrefixFrameMetadataCodec, ProtobufWire, UProtocolNativeWire, UWire, UWireMetadataCodec,
-};
+use up_rust::UNativePrefixWireTransport;
 use up_rust::{
     PayloadCodecIdentity, PayloadEncoding, UCode, UFrameMetadata, UOwnedFrame, UOwnedListener,
     UOwnedTransport, UUri,
+};
+use up_rust::{
+    ProtobufWire, UFrameFieldsMetadataCodec, UProtocolNativeWire, UWire, UWireMetadataCodec,
 };
 use up_transport_zenoh::{zenoh_config, ZenohOwnedCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -152,6 +152,14 @@ async fn owned_core_round_trips_protobuf_and_external_xcdrv2() -> Result<(), Tes
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
+async fn owned_core_preserves_present_empty_payload() -> Result<(), TestError> {
+    let authority = format!("zenoh-owned-empty-{}", std::process::id());
+    assert_owned_round_trip::<ProtobufWire>(&authority, PayloadEncoding::PROTOBUF, Bytes::new())
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() -> Result<(), TestError>
 {
     let authority = format!("zenoh-owned-wrong-wire-{}", std::process::id());
@@ -163,8 +171,8 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() -> Re
         tokio::spawn(async move { receiver.receive_owned(&receive_source, None).await });
     allow_subscriber_matching().await;
 
-    let wrong_metadata = NativePrefixFrameMetadataCodec.encode_frame_metadata(
-        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(),
+    let wrong_metadata = UFrameFieldsMetadataCodec.encode_frame_metadata(
+        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, UFrameFieldsMetadataCodec>(),
         &metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
     )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
@@ -186,8 +194,8 @@ async fn owned_core_malformed_listener_metadata_is_not_delivered() -> Result<(),
         .await?;
     allow_subscriber_matching().await;
 
-    let wrong_metadata = NativePrefixFrameMetadataCodec.encode_frame_metadata(
-        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(),
+    let wrong_metadata = UFrameFieldsMetadataCodec.encode_frame_metadata(
+        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, UFrameFieldsMetadataCodec>(),
         &metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
     )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;

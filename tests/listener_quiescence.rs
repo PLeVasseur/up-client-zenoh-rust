@@ -1,3 +1,4 @@
+// Copyright (c) 2026 Contributors to the Eclipse Foundation
 // SPDX-License-Identifier: Apache-2.0
 //! Real Zenoh SHM listener quiescence and retained-sample ownership.
 #![cfg(feature = "zero-copy")]
@@ -10,14 +11,17 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Notify;
+#[path = "support/allocating_control.rs"]
+mod control;
+use control::{Listener, WithControlWire};
 use up_rust::{
-    PayloadEncoding, ProtobufWire, UCode, UFrameMetadata, UFrameView, UNativePrefixWireTransport,
-    UStatus, UTxBuffer, UTxLoanSpec, UUri, UZeroCopyListener, UZeroCopyTransportImpl,
+    PayloadEncoding, ProtobufWire, UCode, UFrameMetadata, UFrameView, UStatus, UTxBuffer,
+    UTxLoanSpec, UUri,
 };
 use up_transport_zenoh::ZenohZeroCopyCore;
 
-type Transport = UNativePrefixWireTransport<ZenohZeroCopyCore, ProtobufWire>;
-type Frame = <Transport as UZeroCopyTransportImpl>::Rx;
+type Transport = control::Transport<ProtobufWire>;
+type Frame = control::Received<ProtobufWire>;
 
 async fn transport(name: &str, timeout: Duration) -> (Arc<Transport>, UUri) {
     let authority = format!("zenoh-q-{name}-{}", std::process::id());
@@ -30,7 +34,7 @@ async fn transport(name: &str, timeout: Duration) -> (Arc<Transport>, UUri) {
         .await
         .unwrap();
     (
-        Arc::new(core.with_selected_wire(ProtobufWire)),
+        Arc::new(core.with_control_wire(ProtobufWire)),
         UUri::try_from_parts(&authority, 0x4210, 1, 0x9000).unwrap(),
     )
 }
@@ -59,8 +63,8 @@ struct Blocking {
 }
 
 #[async_trait]
-impl UZeroCopyListener<Frame> for Blocking {
-    async fn on_receive_zero_copy(&self, frame: Frame) {
+impl Listener<Frame> for Blocking {
+    async fn on_frame(&self, frame: Frame) {
         *self.retained.lock().unwrap() = Some(frame);
         self.entered.notify_one();
         self.release.notified().await;
@@ -86,7 +90,7 @@ async fn check_quiescence(timed_out: bool) {
     let (transport, source) =
         transport(if timed_out { "timeout" } else { "normal" }, timeout).await;
     let listener = Arc::new(Blocking::default());
-    let registration: Arc<dyn UZeroCopyListener<Frame>> = listener.clone();
+    let registration: Arc<dyn Listener<Frame>> = listener.clone();
     transport
         .register_validated_zero_copy_listener(&source, None, registration.clone())
         .await
@@ -156,9 +160,9 @@ struct SelfRemoving {
 }
 
 #[async_trait]
-impl UZeroCopyListener<Frame> for SelfRemoving {
-    async fn on_receive_zero_copy(&self, frame: Frame) {
-        let listener: Arc<dyn UZeroCopyListener<Frame>> = self.own.upgrade().unwrap();
+impl Listener<Frame> for SelfRemoving {
+    async fn on_frame(&self, frame: Frame) {
+        let listener: Arc<dyn Listener<Frame>> = self.own.upgrade().unwrap();
         let result = self
             .transport
             .upgrade()

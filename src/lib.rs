@@ -16,6 +16,8 @@
 //! selected-wire adapters provide SDK identity validation above physical carriage.
 mod listener_registry;
 mod mechanics;
+#[cfg(feature = "zero-copy")]
+mod prepared;
 /// SDK RPC client integration using Zenoh queries and replies.
 pub mod rpc;
 /// Local URI-provider implementation for configured Zenoh transports.
@@ -27,6 +29,13 @@ pub mod utransport;
 pub mod wire_full;
 #[cfg(feature = "zero-copy")]
 mod zero_copy;
+
+#[cfg(feature = "zero-copy")]
+pub use prepared::{
+    ZenohAllocationObserver, ZenohPreparedConfig, ZenohPreparedCore, ZenohPreparedRoute,
+    ZenohPreparedRx, ZenohPreparedStats, ZenohPreparedSubscription, ZenohPreparedTx,
+    ZenohRouteReservation,
+};
 
 pub use rpc::ZenohRpcClient;
 #[cfg(feature = "benchmark-owned")]
