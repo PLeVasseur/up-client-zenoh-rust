@@ -35,7 +35,7 @@ use zenoh::{
     Wait,
 };
 
-use crate::mechanics::ZenohWireMechanics;
+use crate::mechanics::{ZenohWireMechanics, DEFAULT_SHM_SEGMENT_SIZE};
 use up_rust::ListenerAdmission;
 
 type ZeroCopySubscriberMap = Arc<
@@ -63,6 +63,7 @@ pub struct ZenohZeroCopyCore {
     subscriber_map: ZeroCopySubscriberMap,
     listener_quiesce_timeout: std::time::Duration,
     publisher_readiness_timeout: Option<std::time::Duration>,
+    prewarmed_shm_segment_size: Option<usize>,
 }
 
 /// Builder for [`ZenohZeroCopyCore`].
@@ -74,6 +75,7 @@ pub struct ZenohZeroCopyCoreBuilder {
     config: crate::zenoh_config::Config,
     uri: String,
     shm_segment_size: Option<usize>,
+    shm_prewarm: bool,
     listener_quiesce_timeout: std::time::Duration,
     publisher_readiness_timeout: Option<std::time::Duration>,
 }
@@ -102,9 +104,19 @@ impl ZenohZeroCopyCore {
             config: crate::zenoh_config::Config::default(),
             uri: uri.into(),
             shm_segment_size: None,
+            shm_prewarm: false,
             listener_quiesce_timeout: std::time::Duration::from_secs(5),
             publisher_readiness_timeout: None,
         }
+    }
+
+    /// Returns the configured size of the eagerly initialized SHM provider.
+    ///
+    /// `None` means prewarming was disabled. This is a setup receipt, not an
+    /// operating-system residency measurement or a count of bytes written here.
+    #[must_use]
+    pub fn prewarmed_shm_segment_size(&self) -> Option<usize> {
+        self.prewarmed_shm_segment_size
     }
 
     /// Wraps this core in the generic selected-wire adapter.
@@ -186,22 +198,50 @@ impl ZenohZeroCopyCoreBuilder {
         Ok(self)
     }
 
+    /// Materializes the configured SHM data region before the core becomes usable.
+    ///
+    /// Disabled by default, preserving lazy provider initialization. When enabled,
+    /// construction initializes the actual provider through Zenoh's safe API before
+    /// returning. The pinned POSIX implementation maps and locks the complete segment;
+    /// setup failure fails construction. No temporary payload loan or redundant writes
+    /// are required. Other platform residency is not established by this option.
+    /// It does not change pool sizing, publication or retained sample lifetimes.
+    #[must_use]
+    pub fn with_shm_prewarm(mut self, enabled: bool) -> Self {
+        self.shm_prewarm = enabled;
+        self
+    }
+
     /// Builds the selected-wire zero-copy core.
     ///
     /// # Errors
     ///
     /// Returns a status when the Zenoh session, URI validation, or SHM
-    /// configuration fails.
+    /// configuration or requested provider prewarming fails.
     pub async fn build(self) -> Result<ZenohZeroCopyCore, UStatus> {
+        if self.shm_prewarm {
+            let size = self.shm_segment_size.unwrap_or(DEFAULT_SHM_SEGMENT_SIZE);
+            std::alloc::Layout::from_size_align(size, 1).map_err(|err| {
+                UStatus::fail_with_code(
+                    UCode::InvalidArgument,
+                    format!("invalid Zenoh SHM prewarming size: {err}"),
+                )
+            })?;
+        }
         let mut mechanics = ZenohWireMechanics::new(self.config, self.uri).await?;
         if let Some(shm_segment_size) = self.shm_segment_size {
             mechanics.set_shm_segment_size(shm_segment_size)?;
         }
+        let prewarmed_shm_segment_size = self
+            .shm_prewarm
+            .then(|| mechanics.prewarm_shm())
+            .transpose()?;
         Ok(ZenohZeroCopyCore {
             mechanics,
             subscriber_map: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             listener_quiesce_timeout: self.listener_quiesce_timeout,
             publisher_readiness_timeout: self.publisher_readiness_timeout,
+            prewarmed_shm_segment_size,
         })
     }
 }

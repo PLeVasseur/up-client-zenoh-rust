@@ -12,6 +12,11 @@ metadata attachment through publication. `ZenohRxFrame` retains the native sampl
 and encoded metadata; `sample()` returns a borrow bounded by that frame's lifetime.
 SDK selected-wire validation remains above the physical carriage layer.
 
+`ZenohZeroCopyCoreBuilder::with_shm_prewarm(true)` optionally initializes the actual
+provider before returning the core, delegating mapping and locking to Zenoh.
+`prewarmed_shm_segment_size()` reports the configured size, not measured residency.
+See [SHM provider prewarming](shm-prewarming.md) for failure and memory costs.
+
 Both frame and message paths use the SDK's shared `UPriority` before the existing
 Zenoh priority mapping. Classic sample attributes project their own encoding and
 are checked together with payload presence when rebuilding the message. Selected

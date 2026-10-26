@@ -155,3 +155,8 @@ with `ZenohZeroCopyCoreBuilder::with_publisher_readiness`. See
 [publisher readiness](docs/publisher-readiness.md) for timeout, cancellation and
 presence-versus-delivery semantics; SHM allocation and listener quiescence remain
 separate binding contracts.
+
+Native selected-wire cores may opt into construction-time provider initialization
+with `ZenohZeroCopyCoreBuilder::with_shm_prewarm(true)`. The default remains lazy.
+See [SHM provider prewarming](docs/shm-prewarming.md) for native mapping/locking,
+setup failures and the distinction between configured size and measured residency.

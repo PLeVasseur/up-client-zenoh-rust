@@ -23,7 +23,7 @@ type ZenohShmProvider = ShmProvider<PosixShmProviderBackend>;
 type ZenohShmProviderInit = Result<Arc<ZenohShmProvider>, String>;
 
 #[cfg(feature = "zero-copy")]
-const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
+pub(crate) const DEFAULT_SHM_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 #[cfg(feature = "zero-copy")]
@@ -92,6 +92,11 @@ impl ZenohWireMechanics {
                     format!("failed to initialize Zenoh SHM provider: {err}"),
                 )
             })
+    }
+
+    pub(crate) fn prewarm_shm(&self) -> Result<usize, UStatus> {
+        self.shm_provider()?;
+        Ok(self.shm_segment_size)
     }
 }
 
