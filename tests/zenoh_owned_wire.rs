@@ -164,7 +164,7 @@ async fn owned_core_rejects_wrong_wire_before_pull_receive_exposes_frame() -> Re
     allow_subscriber_matching().await;
 
     let wrong_metadata = NativePrefixFrameMetadataCodec.encode_frame_metadata(
-        ProtobufWire::metadata_context(),
+        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(),
         &metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
     )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;
@@ -187,7 +187,7 @@ async fn owned_core_malformed_listener_metadata_is_not_delivered() -> Result<(),
     allow_subscriber_matching().await;
 
     let wrong_metadata = NativePrefixFrameMetadataCodec.encode_frame_metadata(
-        ProtobufWire::metadata_context(),
+        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(),
         &metadata(source.clone(), Some(PayloadEncoding::PROTOBUF)),
     )?;
     publish_raw_zenoh(&source, None, wrong_metadata, b"drop").await?;

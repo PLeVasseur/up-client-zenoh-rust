@@ -25,7 +25,7 @@ use up_rust::{
     ProtobufWire, UCode, UEncodedLoanedRxFrame, UFrameMetadata, UFrameView, UProtocolNativeWire,
     UTxBuffer, UTxLoanSpec, UUninitTxBuffer, UUri, UWire, UWireMetadataCodec, UWireRx,
     UZeroCopyListener, UZeroCopyTransportImpl, UZeroCopyUninitTransportImpl, WireIdentity,
-    NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, PROTOBUF_WIRE_ID, UFRAME_FIELDS_METADATA_LAYOUT_ID,
+    NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID, PROTOBUF_WIRE_ID,
 };
 use up_transport_zenoh::{zenoh_config, ZenohRxFrame, ZenohZeroCopyCore};
 use up_wire_xcdrv2::{XcdrV2Wire, VEHICLE_SIGNAL_V1_GOLDEN_BYTES};
@@ -146,7 +146,6 @@ struct ProtobufWireWithNativePayloadFamily;
 impl UWire for ProtobufWireWithNativePayloadFamily {
     const WIRE_ID: WireIdentity = PROTOBUF_WIRE_ID;
     const PAYLOAD_FAMILY_ID: WireIdentity = NATIVE_EXPLICIT_PAYLOAD_FAMILY_ID;
-    const METADATA_LAYOUT_ID: WireIdentity = UFRAME_FIELDS_METADATA_LAYOUT_ID;
     const FORMAT_VERSION: u16 = ProtobufWire::FORMAT_VERSION;
 }
 
@@ -206,7 +205,10 @@ where
     let attachment = tx.attachment_bytes();
     assert_eq!(
         NativePrefixFrameMetadataCodec
-            .decode_frame_metadata(W::metadata_context(), &attachment)
+            .decode_frame_metadata(
+                up_rust::UWireMetadataContext::from_wire::<W, NativePrefixFrameMetadataCodec>(),
+                &attachment
+            )
             .expect("decode metadata"),
         metadata
     );
@@ -475,8 +477,10 @@ async fn zero_copy_non_shm_payload_is_rejected_before_pull_receive_exposes_frame
     let receiver = test_core(&authority).await.with_selected_wire(ProtobufWire);
     let source = topic_for(&authority, 0x9308);
     let metadata = metadata(source.clone(), Some(PayloadEncoding::PROTOBUF));
-    let attachment = NativePrefixFrameMetadataCodec
-        .encode_frame_metadata(ProtobufWire::metadata_context(), &metadata)?;
+    let attachment = NativePrefixFrameMetadataCodec.encode_frame_metadata(
+        up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(),
+        &metadata,
+    )?;
     let receive_source = source.clone();
     let receive_task = tokio::spawn(async move {
         receiver
@@ -555,7 +559,7 @@ async fn zero_copy_non_shm_listener_payload_is_not_delivered() -> Result<(), Tes
         &source,
         None,
         NativePrefixFrameMetadataCodec
-            .encode_frame_metadata(ProtobufWire::metadata_context(), &metadata)?,
+            .encode_frame_metadata(up_rust::UWireMetadataContext::from_wire::<ProtobufWire, NativePrefixFrameMetadataCodec>(), &metadata)?,
         b"not-shm-listener",
     )
     .await?;

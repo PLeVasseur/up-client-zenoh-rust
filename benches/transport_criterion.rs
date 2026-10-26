@@ -520,7 +520,7 @@ fn selected_wire_ack(
     validate_stable_payload_for_case(frame, contract);
     PayloadContractAck {
         id: frame.metadata().id().clone(),
-        message_type: frame.metadata().kind().to_legacy_type(),
+        message_type: frame.metadata().kind(),
         case_id: contract.case_id(),
         sequence: PAYLOAD_CONTRACT_SEQUENCE,
         semantic_reference_len: contract.semantic_reference_len(),

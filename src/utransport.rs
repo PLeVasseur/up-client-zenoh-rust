@@ -16,9 +16,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::sync::Arc;
 use tracing::warn;
-use up_rust::frame::metadata::{
-    try_project_attributes_to_frame_metadata, try_project_frame_to_umessage,
-};
+use up_rust::frame::metadata::try_project_frame_to_umessage;
 use up_rust::{
     ComparableListener, UAttributes, UAttributesValidators, UCode, UListener, UMessage, UStatus,
     UTransport, UUri,
@@ -29,7 +27,7 @@ pub(crate) fn message_from_parts(
     attributes: &UAttributes,
     payload: Option<Bytes>,
 ) -> Result<UMessage, UStatus> {
-    let metadata = try_project_attributes_to_frame_metadata(attributes, None).map_err(|err| {
+    let metadata = attributes.try_project_to_frame_metadata().map_err(|err| {
         UStatus::fail_with_code(
             UCode::InvalidArgument,
             format!("Unable to create UFrameMetadata from Zenoh sample: {err}"),

@@ -94,10 +94,9 @@ impl UOwnedTransportCore for ZenohOwnedCore {
         let zenoh_key = self
             .mechanics
             .to_zenoh_key_string(metadata.source(), metadata.sink());
-        let priority = crate::mechanics::map_zenoh_priority(metadata.priority().map_or(
-            up_rust::UPriority::CS1,
-            up_rust::FramePriority::to_legacy_priority,
-        ));
+        let priority = crate::mechanics::map_zenoh_priority(
+            metadata.priority().unwrap_or(up_rust::UPriority::CS1),
+        );
         let attachment = ZBytes::from(frame.encoded_metadata().to_vec());
         let payload = frame
             .payload()

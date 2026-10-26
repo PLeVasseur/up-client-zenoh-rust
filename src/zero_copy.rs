@@ -383,10 +383,11 @@ impl UEncodedLoanedRxFrame for ZenohRxFrame {
         let shm = self.sample.payload().as_shm().ok_or_else(|| {
             UWireError::invalid_payload("zero-copy Zenoh receive payload is not SHM-backed")
         })?;
-        // SAFETY: as_shm() proves Zenoh retained a shared-memory lease for this sample.
-        Ok(unsafe {
-            LoanedPayload::new_unchecked(shm.as_ref(), PayloadLoanProvenance::OpaqueTransportLoan)
-        })
+        // as_shm() proves Zenoh retained a shared-memory lease for this sample.
+        Ok(LoanedPayload::new(
+            shm.as_ref(),
+            PayloadLoanProvenance::OpaqueTransportLoan,
+        ))
     }
 }
 
@@ -674,10 +675,9 @@ fn reserve_tx_parts(
     let metadata = spec.metadata();
     let zenoh_key = transport.to_zenoh_key_string(metadata.source(), metadata.sink());
     let attachment = ZBytes::from(spec.encoded_metadata().to_vec());
-    let priority = crate::mechanics::map_zenoh_priority(metadata.priority().map_or(
-        up_rust::UPriority::CS1,
-        up_rust::FramePriority::to_legacy_priority,
-    ));
+    let priority = crate::mechanics::map_zenoh_priority(
+        metadata.priority().unwrap_or(up_rust::UPriority::CS1),
+    );
     let payload = reserve_payload(transport, spec.payload_len(), payload_alignment)?;
     Ok((zenoh_key, attachment, priority, payload))
 }

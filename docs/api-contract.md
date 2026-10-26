@@ -12,6 +12,13 @@ metadata attachment through publication. `ZenohRxFrame` retains the native sampl
 and encoded metadata; `sample()` returns a borrow bounded by that frame's lifetime.
 SDK selected-wire validation remains above the physical carriage layer.
 
+Both frame and message paths use the SDK's shared `UPriority` before the existing
+Zenoh priority mapping. Classic sample attributes project their own encoding and
+are checked together with payload presence when rebuilding the message. Selected
+wire/family and codec-layout identities are combined explicitly for metadata.
+Safe loan-view construction uses the retained SHM sample; it does not copy or
+coalesce serialized payload slices into a claimed native loan.
+
 See [frame binding](uframe-binding.md) for placement and
 [listener lifecycle](listener-lifecycle.md) for close/quiesce/retained ownership.
 The public API, examples and test targets use `missing_docs = "deny"`, with strict

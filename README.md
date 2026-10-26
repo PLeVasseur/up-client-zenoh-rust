@@ -12,6 +12,9 @@ classic `UPTransportZenoh` registry retains its existing contract.
 Public items and targets use `missing_docs = "deny"`. See the
 [public API guide](docs/api-contract.md) for builder, RPC and retained-buffer
 contracts, with links to this binding's placement and lifecycle guides.
+SDK-facing frame/message priorities share `UPriority`, and checked projections
+preserve each sample's encoding and payload presence. The metadata codec supplies
+layout identity; SHM loan views retain their native sample without payload copying.
 
 ```shell
 # Check clippy
