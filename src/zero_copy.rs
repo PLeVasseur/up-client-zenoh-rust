@@ -828,10 +828,10 @@ impl ZenohZeroCopyCore {
                     let frame = ZenohRxFrame::new(attachment.clone(), sample);
                     callback_listener.push(frame);
                 };
-                // Zenoh can call a local subscriber inline from an async put.
-                // The SDK native guard is synchronous; enter Tokio's supported
-                // blocking region so its admission lock is legal and other
-                // runtime workers can make progress during bounded sink work.
+                // Zenoh can call a local subscriber inline from an async put on
+                // the multithread runtime it requires. SDK native admission never
+                // blocks; enter Tokio's blocking region so other runtime workers
+                // keep making progress while a bounded sink handoff waits.
                 if tokio::runtime::Handle::try_current().is_ok() {
                     tokio::task::block_in_place(receive);
                 } else {

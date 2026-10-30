@@ -2369,7 +2369,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -2409,7 +2409,7 @@ dependencies = [
  "cfg_aliases 0.2.2",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -3351,7 +3351,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -3844,7 +3844,7 @@ dependencies = [
 [[package]]
 name = "up-rust"
 version = "0.10.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=d06da415bb24e00ac23335d8365728073f97416c#d06da415bb24e00ac23335d8365728073f97416c"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=e7fbe175bc3dc9327489e991a17b0caf7678edeb#e7fbe175bc3dc9327489e991a17b0caf7678edeb"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3869,7 +3869,7 @@ dependencies = [
 [[package]]
 name = "up-rust-macros"
 version = "0.10.0-SNAPSHOT"
-source = "git+https://github.com/PLeVasseur/up-rust.git?rev=d06da415bb24e00ac23335d8365728073f97416c#d06da415bb24e00ac23335d8365728073f97416c"
+source = "git+https://github.com/PLeVasseur/up-rust.git?rev=e7fbe175bc3dc9327489e991a17b0caf7678edeb#e7fbe175bc3dc9327489e991a17b0caf7678edeb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3907,7 +3907,7 @@ dependencies = [
 [[package]]
 name = "up-wire-xcdrv2"
 version = "0.1.0"
-source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=759b8cefc1284c4809af87b25050b8b564962043#759b8cefc1284c4809af87b25050b8b564962043"
+source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=68f6c3874fd31efbc187661d3501cd93a07491f6#68f6c3874fd31efbc187661d3501cd93a07491f6"
 dependencies = [
  "up-rust",
  "up-wire-xcdrv2-macros",
@@ -3916,7 +3916,7 @@ dependencies = [
 [[package]]
 name = "up-wire-xcdrv2-macros"
 version = "0.1.0"
-source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=759b8cefc1284c4809af87b25050b8b564962043#759b8cefc1284c4809af87b25050b8b564962043"
+source = "git+https://github.com/PLeVasseur/up-wire-xcdrv2-rust.git?rev=68f6c3874fd31efbc187661d3501cd93a07491f6#68f6c3874fd31efbc187661d3501cd93a07491f6"
 dependencies = [
  "proc-macro2",
  "quote",
