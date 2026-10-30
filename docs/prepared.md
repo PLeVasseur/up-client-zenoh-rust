@@ -55,6 +55,16 @@ task allocation per sample or hidden binding queue. Block may hold the native
 delivery thread up to the SDK inbox deadline, including during reentrant sends;
 synchronous publication alone does not prove end-to-end nonblocking progress.
 
+A held native delivery thread also stalls the receiving transport behind it.
+Published SHM chunks stay owned by the native transport until the receiving
+transport has processed them, so frames already in transit remain valid during
+such a stall and arrive in order once the callback returns; their validity does
+not depend on how quickly the receiver maps each descriptor. This relies on the
+SHM handoff that the pinned Zenoh release negotiates with its peers: every SHM peer
+of a deployment must use a release negotiating the same SHM protocol. A peer
+without that capability delivers no native SHM sample; the prepared receiver
+rejects and counts such samples instead of copying them into a native borrow.
+
 A put that would synchronously reenter an already-entered local native sink is
 refused with a delivery error before native publication. Setup-owned callback
 identities cover other cores sharing the session and ancestors of nested native
