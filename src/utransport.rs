@@ -293,10 +293,14 @@ mod malformed_presence_tests {
             .with_session(zenoh::open(config).await.unwrap())
             .build()
             .unwrap();
-        let source =
-            UUri::try_from_parts("presence-source", 0x4321, 1, if query { 0 } else { 0x8001 })
-                .unwrap();
-        let method = UUri::try_from_parts("presence-service", 0x1234, 1, 1).unwrap();
+        let source = UUri::try_from_parts(
+            "presence-source",
+            0x0001_4321,
+            1,
+            if query { 0 } else { 0x8001 },
+        )
+        .unwrap();
+        let method = UUri::try_from_parts("presence-service", 0x0001_1234, 1, 1).unwrap();
         let sink = query.then_some(&method);
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let listener: Arc<dyn UListener> = Arc::new(Observe(sender));

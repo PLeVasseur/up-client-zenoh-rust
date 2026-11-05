@@ -103,9 +103,9 @@ impl UListener for ResponseListener {
     }
 }
 
-#[test_case("//requester/1/1/0", "//responder/2/1/0", 0x1, "//*/FFFF/FF/0", Some("//responder/2/1/1"); "Any source UUri")]
-#[test_case("//requester/1/1/0", "//responder/2/1/0", 0x1, "//requester/1/1/0", Some("//responder/2/1/1"); "Specific source UUri")]
-#[test_case("//ustreamer_requester/1/1/0", "//ustreamer_responder/2/1/0", 0x1, "//ustreamer_requester/FFFF/FF/FFFF", Some("//*/FFFF/FF/FFFF"); "uStreamer case for RPC")]
+#[test_case("//requester/1/1/1/0", "//responder/2/1/1/0", 0x1, "//*/FFFF/1/FF/0", Some("//responder/2/1/1/1"); "Any source UUri")]
+#[test_case("//requester/1/1/1/0", "//responder/2/1/1/0", 0x1, "//requester/1/1/1/0", Some("//responder/2/1/1/1"); "Specific source UUri")]
+#[test_case("//ustreamer_requester/1/1/1/0", "//ustreamer_responder/2/1/1/0", 0x1, "//ustreamer_requester/FFFF/1/FF/FFFF", Some("//*/FFFF/1/FF/FFFF"); "uStreamer case for RPC")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_rpc_server_client(
     src_uuri: &str,

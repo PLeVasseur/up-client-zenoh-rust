@@ -54,8 +54,8 @@ impl UListener for PublishNotificationListener {
     }
 }
 
-#[test_case("//publisher/1/1/0", 0x8000, "//publisher/1/1/8000"; "Normal UUri")]
-#[test_case("//publisher/2/1/0", 0x8001, "//publisher/FFFF/FF/FFFF"; "Special UUri")]
+#[test_case("//publisher/1/1/1/0", 0x8000, "//publisher/1/1/1/8000"; "Normal UUri")]
+#[test_case("//publisher/2/1/1/0", 0x8001, "//publisher/FFFF/1/FF/FFFF"; "Special UUri")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_publish_and_subscribe(src_uuri: &str, resource_id: u16, listen_uuri: &str) {
     test_lib::before_test();
@@ -65,7 +65,7 @@ async fn test_publish_and_subscribe(src_uuri: &str, resource_id: u16, listen_uur
     let uptransport_send = test_lib::create_up_transport_zenoh(src_uuri, None)
         .await
         .unwrap();
-    let uptransport_recv = test_lib::create_up_transport_zenoh("//subscriber/3/1/0", None)
+    let uptransport_recv = test_lib::create_up_transport_zenoh("//subscriber/3/1/1/0", None)
         .await
         .unwrap();
     let publish_uuri = uptransport_send.get_resource_uri(resource_id);
@@ -104,14 +104,14 @@ async fn test_publish_private_use_encoding_survives_attachment() {
     test_lib::before_test();
 
     let target_data = String::from("open payload");
-    let uptransport_send = test_lib::create_up_transport_zenoh("//open_publisher/1/1/0", None)
+    let uptransport_send = test_lib::create_up_transport_zenoh("//open_publisher/1/1/1/0", None)
         .await
         .unwrap();
-    let uptransport_recv = test_lib::create_up_transport_zenoh("//open_subscriber/3/1/0", None)
+    let uptransport_recv = test_lib::create_up_transport_zenoh("//open_subscriber/3/1/1/0", None)
         .await
         .unwrap();
     let publish_uuri = uptransport_send.get_resource_uri(0x8002);
-    let listen_uuri = UUri::from_str("//open_publisher/1/1/8002").unwrap();
+    let listen_uuri = UUri::from_str("//open_publisher/1/1/1/8002").unwrap();
     let payload_encoding = PayloadEncoding::from_id(0xFA2D).unwrap();
 
     let pub_listener = Arc::new(PublishNotificationListener::new());
@@ -140,9 +140,9 @@ async fn test_publish_private_use_encoding_survives_attachment() {
         .unwrap();
 }
 
-#[test_case("//sender/1/1/0", 0x8000, "//receiver/2/1/0", "//*/FFFF/FF/FFFF", Some("//receiver/2/1/0"); "Any source UUri")]
-#[test_case("//sender/1/1/0", 0x8000, "//receiver/2/1/0", "//sender/1/1/8000", Some("//receiver/2/1/0"); "Specific source UUri")]
-#[test_case("//ustreamer_sender/1/1/0", 0x8000, "//ustreamer_receiver/2/1/0", "//ustreamer_sender/FFFF/FF/FFFF", Some("//*/FFFF/FF/FFFF"); "uStreamer case for notification")]
+#[test_case("//sender/1/1/1/0", 0x8000, "//receiver/2/1/1/0", "//*/FFFF/1/FF/FFFF", Some("//receiver/2/1/1/0"); "Any source UUri")]
+#[test_case("//sender/1/1/1/0", 0x8000, "//receiver/2/1/1/0", "//sender/1/1/1/8000", Some("//receiver/2/1/1/0"); "Specific source UUri")]
+#[test_case("//ustreamer_sender/1/1/1/0", 0x8000, "//ustreamer_receiver/2/1/1/0", "//ustreamer_sender/FFFF/1/FF/FFFF", Some("//*/FFFF/1/FF/FFFF"); "uStreamer case for notification")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_notification_and_subscribe(
     src_uuri: &str,

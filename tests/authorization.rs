@@ -56,28 +56,28 @@ const PEER_ACL_CONFIG: &str = r#"
             "permission": "allow",
             "flows": ["ingress"],
             "messages": ["put"],
-            "key_exprs": ["up/client/ABCD/0/1/A000/{}/{}/{}/{}/{}"]
+            "key_exprs": ["up/client/ABCD/1/1/A000/{}/{}/{}/{}/{}"]
         },
         {
             "id": "allowed_subscriber_declarations",
             "permission": "allow",
             "flows": ["ingress"],
             "messages": ["declare_subscriber"],
-            "key_exprs": ["up/*/*/*/*/*/service_provider/ABCD/0/1/**"]
+            "key_exprs": ["up/*/*/*/*/*/service_provider/ABCD/1/1/**"]
         },
         {
             "id": "allowed_rpc_requests",
             "permission": "allow",
             "flows": ["ingress", "egress"],
             "messages": ["put"],
-            "key_exprs": ["up/*/*/*/*/0/service_provider/ABCD/0/1/**"]
+            "key_exprs": ["up/*/*/*/*/0/service_provider/ABCD/1/1/**"]
         },
         {
             "id": "allowed_rpc_responses",
             "permission": "allow",
             "flows": ["ingress"],
             "messages": ["put"],
-            "key_exprs": ["up/service_provider/ABCD/0/1/*/*/*/*/*/0"]
+            "key_exprs": ["up/service_provider/ABCD/1/1/*/*/*/*/*/0"]
         }
     ],
     "subjects": [
@@ -135,8 +135,8 @@ const CLIENT_CREDENTIALS_UNAUTHORIZED: &str = r#"
     }
 }
 "#;
-const AUTHORIZED_TOPIC: &str = "//client/ABCD/1/A000";
-const UNAUTHORIZED_TOPIC: &str = "//client/ABCD/1/BBBB";
+const AUTHORIZED_TOPIC: &str = "//client/ABCD/1/1/A000";
+const UNAUTHORIZED_TOPIC: &str = "//client/ABCD/1/1/BBBB";
 
 async fn create_peer_transport() -> Result<UPTransportZenoh, UStatus> {
     let mut peer_config = zenoh::config::Config::from_json5(PEER_CONFIG)
@@ -157,8 +157,8 @@ async fn create_peer_transport() -> Result<UPTransportZenoh, UStatus> {
         "succeeds for authorized topic and client")]
 #[test_case::test_case(
     UMessageBuilder::request(
-        UUri::from_str("//service_provider/ABCD/1/7100").expect("invalid method-to-invoke"),
-        UUri::from_str("//client/BBBB/1/0").expect("invalid reply-to address"),
+        UUri::from_str("//service_provider/ABCD/1/1/7100").expect("invalid method-to-invoke"),
+        UUri::from_str("//client/BBBB/1/1/0").expect("invalid reply-to address"),
         5000
     )
     .build()
@@ -167,9 +167,9 @@ async fn create_peer_transport() -> Result<UPTransportZenoh, UStatus> {
     "succeeds for authorized method-to-invoke and client")]
 #[test_case::test_case(
     UMessageBuilder::response(
-        UUri::from_str("//client/BBBB/1/0").expect("invalid reply-to address"),
+        UUri::from_str("//client/BBBB/1/1/0").expect("invalid reply-to address"),
         UUID::build(),
-        UUri::from_str("//service_provider/ABCD/1/7100").expect("invalid invoked-method")
+        UUri::from_str("//service_provider/ABCD/1/1/7100").expect("invalid invoked-method")
     )
     .build()
     .expect("Failed to build message"),
@@ -189,8 +189,8 @@ async fn create_peer_transport() -> Result<UPTransportZenoh, UStatus> {
     "fails for unauthorized topic but authorized client")]
 #[test_case::test_case(
     UMessageBuilder::request(
-        UUri::from_str("//service_provider/AAAA/2/56").expect("invalid method-to-invoke"),
-        UUri::from_str("//client/BBBB/1/0").expect("invalid reply-to address"),
+        UUri::from_str("//service_provider/AAAA/1/2/56").expect("invalid method-to-invoke"),
+        UUri::from_str("//client/BBBB/1/1/0").expect("invalid reply-to address"),
         5000
     )
     .build()
@@ -199,9 +199,9 @@ async fn create_peer_transport() -> Result<UPTransportZenoh, UStatus> {
     "fails for unauthorized method-to-invoke but authorized client")]
 #[test_case::test_case(
     UMessageBuilder::response(
-        UUri::from_str("//client/BBBB/1/0").expect("invalid reply-to address"),
+        UUri::from_str("//client/BBBB/1/1/0").expect("invalid reply-to address"),
         UUID::build(),
-        UUri::from_str("//service_provider/AAAA/2/56").expect("invalid invoked-method")
+        UUri::from_str("//service_provider/AAAA/1/2/56").expect("invalid invoked-method")
     )
     .build()
     .expect("Failed to build message"),
@@ -234,7 +234,7 @@ async fn test_send_message_to_peer(msg: UMessage, credentials: &str) -> bool {
         .insert_json5("transport/auth", credentials)
         .expect("failed to set auth config");
 
-    let client_transport = UPTransportZenoh::new(client_config, "//client/BBBB/1/0")
+    let client_transport = UPTransportZenoh::new(client_config, "//client/BBBB/1/1/0")
         .await
         .expect("Failed to create transport");
 
@@ -248,13 +248,13 @@ async fn test_send_message_to_peer(msg: UMessage, credentials: &str) -> bool {
 }
 
 #[test_case::test_case(
-    "//service_provider/ABCD/1/7100", CLIENT_CREDENTIALS_AUTHORIZED => true;
+    "//service_provider/ABCD/1/1/7100", CLIENT_CREDENTIALS_AUTHORIZED => true;
     "succeeds for authorized method-to-invoke and client")]
 #[test_case::test_case(
-    "//service_provider/ABCD/1/7100", CLIENT_CREDENTIALS_UNAUTHORIZED => false;
+    "//service_provider/ABCD/1/1/7100", CLIENT_CREDENTIALS_UNAUTHORIZED => false;
     "fails for authorized method-to-invoke but unauthorized client")]
 #[test_case::test_case(
-    "//other_service_provider/ABCD/1/7100", CLIENT_CREDENTIALS_AUTHORIZED => false;
+    "//other_service_provider/ABCD/1/1/7100", CLIENT_CREDENTIALS_AUTHORIZED => false;
     "fails for unauthorized method-to-invoke but authorized client")]
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
@@ -283,7 +283,7 @@ async fn test_subscribe_for_messages_from_peer(sink_filter_uri: &str, credential
         .insert_json5("transport/auth", credentials)
         .expect("failed to set auth config");
     let service_provider_transport =
-        UPTransportZenoh::new(service_provider_config, "//service_provider/ABCD/1/0")
+        UPTransportZenoh::new(service_provider_config, "//service_provider/ABCD/1/1/0")
             .await
             .map(Arc::new)
             .expect("Failed to create service provider transport");
@@ -297,7 +297,7 @@ async fn test_subscribe_for_messages_from_peer(sink_filter_uri: &str, credential
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let reply_to_address =
-        UUri::from_str("//peer/BBBB/1/0").expect("Failed to create reply-to address URI");
+        UUri::from_str("//peer/BBBB/1/1/0").expect("Failed to create reply-to address URI");
     let rpc_request = UMessageBuilder::request(sink_filter.clone(), reply_to_address, 5000)
         .build()
         .expect("Failed to build RPC request message");

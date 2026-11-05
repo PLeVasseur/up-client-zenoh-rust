@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport =
         UPTransportZenoh::new(common::get_zenoh_config(), uri_provider.get_authority()).await?;
 
-    let source_filter = UUri::from_str("//*/FFFFA1B2/1/8001")?;
+    let source_filter = UUri::from_str("//*/A1B2/FFFF/1/8001")?;
     let sink_filter = uri_provider.get_source_uri();
 
     println!(

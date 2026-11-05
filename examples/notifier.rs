@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create uuri
     let source_uuri = uri_provider.get_resource_uri(0x8001);
-    let sink_uuri = UUri::from_str("//receiver/10AB10/1/0")?;
+    let sink_uuri = UUri::from_str("//receiver/AB10/10/1/0")?;
 
     for cnt in 1..=100 {
         let data = format!("notification {cnt}");

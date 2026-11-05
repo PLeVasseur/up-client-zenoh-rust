@@ -66,12 +66,12 @@ async fn test_l2_rpc() {
     let request_data = String::from("This is the request data");
     let response_data = String::from("This is the response data");
     let uptransport_server = Arc::new(
-        test_lib::create_up_transport_zenoh("//l2_responder/2/1/0", None)
+        test_lib::create_up_transport_zenoh("//l2_responder/2/1/1/0", None)
             .await
             .unwrap(),
     );
     let uptransport_client = Arc::new(
-        test_lib::create_up_transport_zenoh("//l2_requester/1/1/0", None)
+        test_lib::create_up_transport_zenoh("//l2_requester/1/1/1/0", None)
             .await
             .unwrap(),
     );

@@ -1092,7 +1092,7 @@ mod tests {
     };
 
     fn topic() -> UUri {
-        UUri::try_from("//dynamic-lifecycle/4210/1/9000").unwrap()
+        UUri::try_from("//dynamic-lifecycle/4210/1/1/9000").unwrap()
     }
 
     async fn core() -> ZenohZeroCopyCore {
@@ -1104,7 +1104,7 @@ mod tests {
         config
             .insert_json5("scouting/gossip/enabled", "false")
             .unwrap();
-        ZenohZeroCopyCore::builder("//dynamic-lifecycle/4210/1/0")
+        ZenohZeroCopyCore::builder("//dynamic-lifecycle/4210/1/1/0")
             .with_config(config)
             .with_shm_segment_size(1024 * 1024)
             .unwrap()

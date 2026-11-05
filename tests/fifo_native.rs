@@ -32,7 +32,7 @@ fn record(target: &Observed, bytes: &[u8]) {
         .push(u64::from_le_bytes(bytes.try_into().unwrap()));
 }
 fn topic(name: &str) -> UUri {
-    UUri::try_from_parts(name, 0x4321, 1, 0x8001).unwrap()
+    UUri::try_from_parts(name, 0x0001_4321, 1, 0x8001).unwrap()
 }
 fn config() -> zenoh_config::Config {
     let mut config = zenoh_config::Config::default();
@@ -123,7 +123,7 @@ async fn classic_ordered_sender_reaches_each_listener_in_fifo_order() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn owned_ordered_sender_reaches_each_listener_in_fifo_order() {
     let source = topic("fifo-owned");
-    let transport = ZenohOwnedCore::new(config(), "//fifo-owned/4321/1/0")
+    let transport = ZenohOwnedCore::new(config(), "//fifo-owned/4321/1/1/0")
         .await
         .unwrap()
         .with_selected_wire(ProtobufWire);
@@ -172,7 +172,7 @@ async fn prepared_shm_ordered_sender_reaches_each_native_listener_in_fifo_order(
     let core = Arc::new(
         ZenohPreparedCore::from_session(
             zenoh::open(config()).await.unwrap(),
-            "//fifo-native/4321/1/0",
+            "//fifo-native/4321/1/1/0",
             &[ZenohRouteReservation {
                 source: source.clone(),
                 sink: None,

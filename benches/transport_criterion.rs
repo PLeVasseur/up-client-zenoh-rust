@@ -202,7 +202,7 @@ async fn build_owned_transport(authority: &str) -> Arc<UPTransportZenoh> {
     Arc::new(
         UPTransportZenoh::new(
             zenoh_config::Config::default(),
-            format!("//{authority}/4210/1/0"),
+            format!("//{authority}/4210/1/1/0"),
         )
         .await
         .expect("Zenoh owned benchmark transport should build"),
@@ -641,7 +641,8 @@ fn resource_id(base: u16, sequence: u64) -> u16 {
 }
 
 fn uri(authority: &str, entity_type: u32, resource: u16) -> UUri {
-    UUri::try_from_parts(authority, entity_type, 1, resource).expect("valid benchmark URI")
+    UUri::try_from_parts(authority, 0x0001_0000 | entity_type, 1, resource)
+        .expect("valid benchmark URI")
 }
 
 fn invalid_argument(error: String) -> UStatus {

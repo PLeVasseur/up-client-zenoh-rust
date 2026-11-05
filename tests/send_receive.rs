@@ -70,10 +70,10 @@ async fn register_listener_and_send(
     )
 }
 
-#[test_case::test_case("vehicle1", 12_000, "//vehicle1/10A10B/1/CA5D", "//vehicle1/10A10B/1/CA5D"; "specific source filter")]
+#[test_case::test_case("vehicle1", 12_000, "//vehicle1/A10B/10/1/CA5D", "//vehicle1/A10B/10/1/CA5D"; "specific source filter")]
 // [utest->dsn~up-attributes-ttl~1]
-#[test_case::test_case("vehicle1", 0, "/D5A/3/9999", "//vehicle1/D5A/3/FFFF"; "source filter with wildcard resource ID")]
-#[test_case::test_case("vehicle1", 12_000, "//vehicle1/70222/2/8001", "//*/FFFF0222/2/8001"; "source filter with wildcard authority and service instance ID")]
+#[test_case::test_case("vehicle1", 0, "/D5A/1/3/9999", "//vehicle1/D5A/1/3/FFFF"; "source filter with wildcard resource ID")]
+#[test_case::test_case("vehicle1", 12_000, "//vehicle1/222/7/2/8001", "//*/222/FFFF/2/8001"; "source filter with wildcard authority and service instance ID")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_publish_message_gets_delivered_to_listener(
     authority: &str,
@@ -98,28 +98,28 @@ async fn test_publish_message_gets_delivered_to_listener(
 #[test_case::test_case(
     "vehicle1",
     12_000,
-    "//vehicle1/10A10B/1/CA5D", "//vehicle1/55A1/2/0",
-    "//vehicle1/10A10B/1/CA5D", "//vehicle1/FFFFFFFF/FF/0";
+    "//vehicle1/A10B/10/1/CA5D", "//vehicle1/55A1/1/2/0",
+    "//vehicle1/A10B/10/1/CA5D", "//vehicle1/FFFF/FFFF/FF/0";
     "specific source filter")]
 // [utest->dsn~up-attributes-ttl~1]
 #[test_case::test_case(
     "vehicle1",
      0,
-    "/D5A/3/9999", "//vehicle1/355A1/2/0",
-    "//vehicle1/D5A/3/FFFF", "//vehicle1/FFFF55A1/FF/0";
+    "/D5A/1/3/9999", "//vehicle1/55A1/3/2/0",
+    "//vehicle1/D5A/1/3/FFFF", "//vehicle1/55A1/FFFF/FF/0";
     "source filter with wildcard resource ID")]
 #[test_case::test_case(
     "vehicle1",
     12_000,
-    "//vehicle1/70222/2/887A", "//vehicle1/55A1/2/0",
-    "//vehicle1/FFFFFFFF/FF/FFFF", "//*/FFFFFFFF/FF/FFFF";
+    "//vehicle1/222/7/2/887A", "//vehicle1/55A1/1/2/0",
+    "//vehicle1/FFFF/FFFF/FF/FFFF", "//*/FFFF/FFFF/FF/FFFF";
     "for all messages from specific authority")]
 // [utest->dsn~up-attributes-ttl~1]
 #[test_case::test_case(
     "vehicle1",
     0,
-    "//vehicle1/70222/2/887A", "//vehicle1/55A1/2/0",
-    "//*/FFFF0222/FF/FFFF", "//vehicle1/55A1/2/0";
+    "//vehicle1/222/7/2/887A", "//vehicle1/55A1/1/2/0",
+    "//*/222/FFFF/FF/FFFF", "//vehicle1/55A1/1/2/0";
     "source filter with wildcard authority and service instance ID")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_notification_message_gets_delivered_to_listener(
@@ -148,23 +148,23 @@ async fn test_notification_message_gets_delivered_to_listener(
 
 #[test_case::test_case(
     "vehicle1",
-    "//vehicle1/10A10B/1/0", "//vehicle1/55A1/2/A1",
-    "//vehicle1/10A10B/1/0", "//vehicle1/55A1/2/A1";
+    "//vehicle1/A10B/10/1/0", "//vehicle1/55A1/1/2/A1",
+    "//vehicle1/A10B/10/1/0", "//vehicle1/55A1/1/2/A1";
     "specific filters")]
 #[test_case::test_case(
     "vehicle1",
-    "/D5A/3/0", "//vehicle1/355A1/2/BB1",
-    "//vehicle1/D5A/3/FFFF", "//vehicle1/FFFF55A1/2/BB1";
+    "/D5A/1/3/0", "//vehicle1/55A1/3/2/BB1",
+    "//vehicle1/D5A/1/3/FFFF", "//vehicle1/55A1/FFFF/2/BB1";
     "source filter with wildcard resource ID")]
 #[test_case::test_case(
     "vehicle1",
-    "//vehicle1/70222/2/0", "//vehicle1/5A55A1/2/D29",
-    "//*/FFFF0222/FF/FFFF", "//vehicle1/5A55A1/2/FFFF";
+    "//vehicle1/222/7/2/0", "//vehicle1/55A1/5A/2/D29",
+    "//*/222/FFFF/FF/FFFF", "//vehicle1/55A1/5A/2/FFFF";
     "source filter with wildcard authority and service instance ID")]
 #[test_case::test_case(
     "vehicle1",
-    "//vehicle1/1200BA/1/0", "//vehicle1/5A1/2/D2",
-    "//*/FFFFFFFF/FF/FFFF", "//vehicle1/FFFFFFFF/FF/FFFF";
+    "//vehicle1/BA/12/1/0", "//vehicle1/5A1/1/2/D2",
+    "//*/FFFF/FFFF/FF/FFFF", "//vehicle1/FFFF/FFFF/FF/FFFF";
     "all RPC requests")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_rpc_request_message_gets_delivered_to_listener(
@@ -193,18 +193,18 @@ async fn test_rpc_request_message_gets_delivered_to_listener(
 
 #[test_case::test_case(
     "vehicle1",
-    "//vehicle1/10A10B/1/0", "//vehicle1/55A1/2/A1",
-    "//vehicle1/10A10B/1/0", "//vehicle1/55A1/2/A1";
+    "//vehicle1/A10B/10/1/0", "//vehicle1/55A1/1/2/A1",
+    "//vehicle1/A10B/10/1/0", "//vehicle1/55A1/1/2/A1";
     "specific filters")]
 #[test_case::test_case(
     "vehicle1",
-    "/D5A/3/0", "//vehicle1/355A1/2/BB1",
-    "//vehicle1/D5A/3/FFFF", "//vehicle1/FFFF55A1/2/BB1";
+    "/D5A/1/3/0", "//vehicle1/55A1/3/2/BB1",
+    "//vehicle1/D5A/1/3/FFFF", "//vehicle1/55A1/FFFF/2/BB1";
     "source filter with wildcard resource ID")]
 #[test_case::test_case(
     "vehicle1",
-    "//vehicle1/70222/2/0", "//vehicle1/5A55A1/2/D29",
-    "//vehicle1/FFFF0222/FF/FFFF", "//*/5A55A1/2/FFFF";
+    "//vehicle1/222/7/2/0", "//vehicle1/55A1/5A/2/D29",
+    "//vehicle1/222/FFFF/FF/FFFF", "//*/55A1/5A/2/FFFF";
     "source filter with wildcard authority and service instance ID")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_rpc_response_message_gets_delivered_to_listener(
@@ -235,10 +235,10 @@ async fn test_rpc_response_message_gets_delivered_to_listener(
 async fn test_expired_rpc_request_message_is_not_delivered_to_listener() {
     test_lib::before_test();
 
-    let reply_to = UUri::from_str("//vehicle1/10A10B/1/0").expect("invalid URI");
-    let method_to_invoke = UUri::from_str("//vehicle1/55A1/2/A1").expect("invalid URI");
-    let source_filter = UUri::from_str("//vehicle1/10A10B/1/0").expect("invalid URI");
-    let sink_filter = UUri::from_str("//vehicle1/55A1/2/A1").expect("invalid URI");
+    let reply_to = UUri::from_str("//vehicle1/A10B/10/1/0").expect("invalid URI");
+    let method_to_invoke = UUri::from_str("//vehicle1/55A1/1/2/A1").expect("invalid URI");
+    let source_filter = UUri::from_str("//vehicle1/A10B/10/1/0").expect("invalid URI");
+    let sink_filter = UUri::from_str("//vehicle1/55A1/1/2/A1").expect("invalid URI");
     // timestamp = 0x018D548EA8E0 (Monday, 29 January 2024, 9:30:52 AM GMT)
     // ver = 0b0111
     // variant = 0b10
@@ -282,7 +282,7 @@ async fn test_unregister_listener_stops_processing_of_messages() {
 
     let listener_to_register = Arc::new(listener);
     let msg =
-        UMessageBuilder::publish(UUri::from_str("//vehicle/123/1/9000").expect("invalid topic"))
+        UMessageBuilder::publish(UUri::from_str("//vehicle/123/1/1/9000").expect("invalid topic"))
             .build()
             .expect("failed to create message");
 
@@ -330,8 +330,8 @@ async fn test_same_listener_can_be_registered_for_multiple_filters() {
     });
 
     let listener_to_register = Arc::new(listener);
-    let topic1 = UUri::try_from_parts("vehicle", 0x1234, 0x01, 0x9000).expect("invalid topic");
-    let topic2 = UUri::try_from_parts("vehicle", 0xABCD, 0x01, 0xA000).expect("invalid topic");
+    let topic1 = UUri::try_from_parts("vehicle", 0x0001_1234, 0x01, 0x9000).expect("invalid topic");
+    let topic2 = UUri::try_from_parts("vehicle", 0x0001_ABCD, 0x01, 0xA000).expect("invalid topic");
 
     assert!(transport
         .register_listener(&topic1, None, listener_to_register.clone())
@@ -391,7 +391,7 @@ async fn test_multiple_listeners_can_be_registered_for_the_same_filter() {
         message_received2.notify_one();
     });
 
-    let topic = UUri::try_from_parts("vehicle", 0x1234, 0x01, 0x9000).expect("invalid topic");
+    let topic = UUri::try_from_parts("vehicle", 0x0001_1234, 0x01, 0x9000).expect("invalid topic");
 
     assert!(transport
         .register_listener(&topic, None, Arc::new(listener1))

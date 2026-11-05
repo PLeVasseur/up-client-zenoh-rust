@@ -12,7 +12,7 @@ use up_transport_zenoh::ZenohZeroCopyCore;
 
 #[tokio::test]
 async fn prewarming_rejects_unrepresentable_size_before_opening_a_session() {
-    let result = ZenohZeroCopyCore::builder("//prewarm-invalid/4210/1/0")
+    let result = ZenohZeroCopyCore::builder("//prewarm-invalid/4210/1/1/0")
         .with_shm_segment_size(usize::MAX)
         .unwrap()
         .with_shm_prewarm(true)
@@ -95,7 +95,7 @@ async fn real_provider_prewarming_materializes_full_mapping_and_releases_capacit
     for bytes in [1024 * 1024, 48 * 1024 * 1024, 96 * 1024 * 1024] {
         for enabled in [false, true] {
             let authority = format!("prewarm-{}-{bytes}-{enabled}", std::process::id());
-            let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+            let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/1/0"))
                 .with_shm_segment_size(bytes)
                 .unwrap()
                 .with_shm_prewarm(enabled)
@@ -104,7 +104,7 @@ async fn real_provider_prewarming_materializes_full_mapping_and_releases_capacit
                 .unwrap();
             assert_eq!(core.prewarmed_shm_segment_size(), enabled.then_some(bytes));
             let transport = core.with_control_wire(up_rust::ProtobufWire);
-            let source = UUri::try_from_parts(&authority, 0x4210, 1, 0x9000).unwrap();
+            let source = UUri::try_from_parts(&authority, 0x0001_4210, 1, 0x9000).unwrap();
             for iteration in 0..3 {
                 let metadata = UFrameMetadata::publish(source.clone())
                     .with_payload_encoding(up_rust::PayloadEncoding::PROTOBUF)

@@ -47,7 +47,7 @@ pub fn agreement() -> NativeProfileAgreement {
     NativeProfileAgreement::new(Arc::new(profile.clone()), &profile).unwrap()
 }
 pub fn source() -> UUri {
-    UUri::try_from_parts("prepared", 0x4210, 1, 0x9000).unwrap()
+    UUri::try_from_parts("prepared", 0x0001_4210, 1, 0x9000).unwrap()
 }
 pub fn definition(source: UUri) -> RouteDefinition {
     RouteDefinition {
@@ -121,7 +121,7 @@ pub async fn pair(
     };
     let sender = ZenohPreparedCore::new(
         config(&endpoint, true),
-        "//prepared/4210/1/0",
+        "//prepared/4210/1/1/0",
         std::slice::from_ref(&reservation),
         ZenohPreparedConfig {
             shm_segment_size: 1024 * 1024,
@@ -134,7 +134,7 @@ pub async fn pair(
     .unwrap();
     let receiver = ZenohPreparedCore::new(
         config(&endpoint, false),
-        "//prepared/4210/1/0",
+        "//prepared/4210/1/1/0",
         &[ZenohRouteReservation {
             transmit: false,
             ..reservation
@@ -175,7 +175,7 @@ pub async fn catalog_pair(
     let session = zenoh::open(config(&endpoint, true)).await.unwrap();
     let sender = ZenohPreparedCore::from_session(
         session.clone(),
-        "//prepared/4210/1/0",
+        "//prepared/4210/1/1/0",
         catalog,
         prepared(),
     )
@@ -183,7 +183,7 @@ pub async fn catalog_pair(
     .unwrap();
     let receiver = ZenohPreparedCore::new(
         config(&endpoint, false),
-        "//prepared/4210/1/0",
+        "//prepared/4210/1/1/0",
         catalog,
         prepared(),
     )

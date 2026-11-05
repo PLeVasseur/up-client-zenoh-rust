@@ -341,8 +341,8 @@ mod tests {
 
     fn request(ttl: u32) -> UMessage {
         UMessageBuilder::request(
-            UUri::try_from("//queries/2/1/1").unwrap(),
-            UUri::try_from("//queries/1/1/0").unwrap(),
+            UUri::try_from("//queries/2/1/1/1").unwrap(),
+            UUri::try_from("//queries/1/1/1/0").unwrap(),
             ttl,
         )
         .build()
@@ -542,7 +542,7 @@ mod tests {
         let message = request(5000);
         let ticket = table.insert(query, message.attributes(), &owner).unwrap();
         let wrong = UMessageBuilder::response(
-            UUri::try_from("//other/1/1/0").unwrap(),
+            UUri::try_from("//other/1/1/1/0").unwrap(),
             message.attributes().id().clone(),
             message.attributes().sink().unwrap().clone(),
         )

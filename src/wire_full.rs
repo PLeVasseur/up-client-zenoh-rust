@@ -480,13 +480,13 @@ mod tests {
         config
             .insert_json5("scouting/multicast/enabled", "false")
             .unwrap();
-        ZenohOwnedCore::new(config, "//owned-lifecycle/4210/1/0")
+        ZenohOwnedCore::new(config, "//owned-lifecycle/4210/1/1/0")
             .await
             .unwrap()
     }
 
     fn topic(resource: u16) -> UUri {
-        UUri::try_from_parts("owned-lifecycle", 0x4210, 1, resource).unwrap()
+        UUri::try_from_parts("owned-lifecycle", 0x0001_4210, 1, resource).unwrap()
     }
 
     struct Noop;

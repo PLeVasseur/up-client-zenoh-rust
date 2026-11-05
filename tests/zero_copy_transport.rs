@@ -36,11 +36,11 @@ use zenoh::bytes::ZBytes;
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 
 fn topic() -> UUri {
-    UUri::try_from_parts("vehicle", 0x4210, 0x01, 0x9000).expect("topic URI")
+    UUri::try_from_parts("vehicle", 0x0001_4210, 0x01, 0x9000).expect("topic URI")
 }
 
 fn topic_for(authority: &str, resource_id: u16) -> UUri {
-    UUri::try_from_parts(authority, 0x4210, 0x01, resource_id).expect("topic URI")
+    UUri::try_from_parts(authority, 0x0001_4210, 0x01, resource_id).expect("topic URI")
 }
 
 fn source_wildcard(authority: &str) -> UUri {
@@ -48,7 +48,7 @@ fn source_wildcard(authority: &str) -> UUri {
 }
 
 fn sink(authority: &str, resource_id: u16) -> UUri {
-    UUri::try_from_parts(authority, 0x4220, 0x01, resource_id).expect("sink URI")
+    UUri::try_from_parts(authority, 0x0001_4220, 0x01, resource_id).expect("sink URI")
 }
 
 fn metadata(source: UUri, payload_encoding: Option<PayloadEncoding>) -> UFrameMetadata {
@@ -72,7 +72,7 @@ fn notification_metadata(
 }
 
 async fn test_core(authority: &str) -> ZenohZeroCopyCore {
-    ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+    ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/1/0"))
         .with_config(zenoh_config::Config::default())
         .with_shm_segment_size(1024 * 1024)
         .expect("shm segment size")
@@ -172,7 +172,7 @@ async fn zenoh_zero_copy_loan_uses_shm_and_selected_wire_attachment() -> Result<
 #[serial]
 async fn zero_copy_builder_rejects_zero_shm_segment_size() -> Result<(), TestError> {
     let Err(error) =
-        ZenohZeroCopyCore::builder("//builder-invalid/4210/1/0").with_shm_segment_size(0)
+        ZenohZeroCopyCore::builder("//builder-invalid/4210/1/1/0").with_shm_segment_size(0)
     else {
         panic!("zero segment size should be rejected");
     };
@@ -689,7 +689,7 @@ async fn publisher_readiness_waits_for_actual_wildcard_peer_and_retains_shm(
 ) -> Result<(), TestError> {
     let authority = format!("matching-peer-{}", std::process::id());
     let sender = Arc::new(
-        ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+        ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/1/0"))
             .with_shm_segment_size(1024 * 1024)?
             .with_publisher_readiness(Duration::from_secs(5))?
             .build()
@@ -741,7 +741,7 @@ async fn publisher_readiness_waits_for_actual_wildcard_peer_and_retains_shm(
 #[serial]
 async fn publisher_readiness_timeout_does_not_publish_to_a_later_peer() -> Result<(), TestError> {
     let authority = format!("matching-timeout-{}", std::process::id());
-    let transport = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+    let transport = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/1/0"))
         .with_shm_segment_size(1024 * 1024)?
         .with_publisher_readiness(Duration::from_millis(80))?
         .build()
@@ -789,15 +789,15 @@ async fn publisher_readiness_timeout_does_not_publish_to_a_later_peer() -> Resul
 #[serial]
 async fn publisher_readiness_cancellation_releases_wait_and_rejects_invalid_deadline(
 ) -> Result<(), TestError> {
-    assert!(ZenohZeroCopyCore::builder("//cancel/4210/1/0")
+    assert!(ZenohZeroCopyCore::builder("//cancel/4210/1/1/0")
         .with_publisher_readiness(Duration::ZERO)
         .is_err());
-    assert!(ZenohZeroCopyCore::builder("//cancel/4210/1/0")
+    assert!(ZenohZeroCopyCore::builder("//cancel/4210/1/1/0")
         .with_publisher_readiness(Duration::MAX)
         .is_err());
     let authority = format!("matching-cancel-{}", std::process::id());
     let transport = Arc::new(
-        ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+        ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/1/0"))
             .with_shm_segment_size(4096)?
             .with_publisher_readiness(Duration::from_secs(5))?
             .build()

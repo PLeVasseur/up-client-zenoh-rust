@@ -131,7 +131,7 @@ impl Transport {
         let core = Arc::new(
             ZenohPreparedCore::new(
                 zenoh_config::Config::default(),
-                format!("//{authority}/4210/1/0"),
+                format!("//{authority}/4210/1/1/0"),
                 &[ZenohRouteReservation {
                     source: source.clone(),
                     sink: None,

@@ -36,7 +36,7 @@ fn config() -> zenoh_config::Config {
     value
 }
 fn topic() -> UUri {
-    UUri::try_from_parts("fifo-probe", 0x4321, 1, 0x8001).unwrap()
+    UUri::try_from_parts("fifo-probe", 0x0001_4321, 1, 0x8001).unwrap()
 }
 fn limits() -> RouteLimits {
     RouteLimits {
@@ -50,7 +50,7 @@ async fn core() -> Arc<ZenohPreparedCore> {
     Arc::new(
         ZenohPreparedCore::from_session(
             session,
-            "//fifo-probe/4321/1/0",
+            "//fifo-probe/4321/1/1/0",
             &[ZenohRouteReservation {
                 source: topic(),
                 sink: None,

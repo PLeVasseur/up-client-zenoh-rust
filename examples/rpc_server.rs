@@ -73,13 +73,13 @@ async fn main() {
 
     println!("uProtocol RPC server example");
     let rpc_server = Arc::new(
-        UPTransportZenoh::new(common::get_zenoh_config(), "//rpc_server/1/1/0")
+        UPTransportZenoh::new(common::get_zenoh_config(), "//rpc_server/1/1/1/0")
             .await
             .unwrap(),
     );
 
     // create uuri
-    let src_uuri = UUri::from_str("//*/FFFF/FF/0").unwrap();
+    let src_uuri = UUri::from_str("//*/FFFF/1/FF/0").unwrap();
     let sink_uuri = rpc_server.get_resource_uri(1);
 
     println!("Register the listener...");

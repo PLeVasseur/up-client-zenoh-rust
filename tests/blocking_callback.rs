@@ -53,10 +53,10 @@ async fn test_blocking_user_callback() {
     test_lib::before_test();
 
     // Initialization
-    let uptransport_send = test_lib::create_up_transport_zenoh("//nonblock_pub/1/1/0", None)
+    let uptransport_send = test_lib::create_up_transport_zenoh("//nonblock_pub/1/1/1/0", None)
         .await
         .unwrap();
-    let uptransport_recv = test_lib::create_up_transport_zenoh("//nonblock_sub/2/1/0", None)
+    let uptransport_recv = test_lib::create_up_transport_zenoh("//nonblock_sub/2/1/1/0", None)
         .await
         .unwrap();
     let pub_uuri = uptransport_send.get_resource_uri(0x8000);

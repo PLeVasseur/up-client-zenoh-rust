@@ -23,7 +23,7 @@ async fn main() {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol publisher example");
-    let publisher = UPTransportZenoh::new(common::get_zenoh_config(), "//publisher/1/1/0")
+    let publisher = UPTransportZenoh::new(common::get_zenoh_config(), "//publisher/1/1/1/0")
         .await
         .unwrap();
 

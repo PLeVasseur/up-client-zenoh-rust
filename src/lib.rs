@@ -190,7 +190,8 @@ impl UPTransportZenoh {
             query_map: pending_queries::PendingQueries::new()?,
             // The authority-only builder does not select an application entity.
             // Applications can use a separate URI provider or new with a full URI.
-            uri: UUri::try_from_parts(local_authority, 0, 0, 0).expect("validated authority"),
+            uri: UUri::try_from_parts(local_authority, 0x0001_0000, 0, 0)
+                .expect("validated authority"),
         })
     }
 
@@ -572,10 +573,10 @@ mod tests {
         }
     }
 
-    #[test_case("//vehicle1/AABB/7/0", true; "succeeds with valid UUri")]
+    #[test_case("//vehicle1/AABB/1/7/0", true; "succeeds with valid UUri")]
     #[test_case("This is not UUri", false; "fails with invalid UUri")]
-    #[test_case("/AABB/7/0", false; "fails with empty UAuthority")]
-    #[test_case("//vehicle1/AABB/7/1", false; "fails with non-zero resource ID")]
+    #[test_case("/AABB/1/7/0", false; "fails with empty UAuthority")]
+    #[test_case("//vehicle1/AABB/1/7/1", false; "fails with non-zero resource ID")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_new_up_transport_zenoh(uri: &str, expected_result: bool) {
         let up_transport_zenoh = UPTransportZenoh::new(zenoh_config::Config::default(), uri).await;
@@ -583,15 +584,16 @@ mod tests {
     }
 
     // Mapping with the examples in Zenoh spec
-    #[test_case("/10AB/3/80CD", None, "up/192.168.1.100/10AB/0/3/80CD/{}/{}/{}/{}/{}"; "Send Publish")]
-    #[test_case("//192.168.1.100/10AB/3/80CD", None, "up/192.168.1.100/10AB/0/3/80CD/{}/{}/{}/{}/{}"; "Subscribe messages")]
-    #[test_case("//192.168.1.100/10AB/3/80CD", Some("//192.168.1.101/20EF/4/0"), "up/192.168.1.100/10AB/0/3/80CD/192.168.1.101/20EF/0/4/0"; "Send Notification")]
-    #[test_case("//*/FFFF/FF/FFFF", Some("//192.168.1.101/20EF/4/0"), "up/*/*/0/*/*/192.168.1.101/20EF/0/4/0"; "Receive all Notifications")]
-    #[test_case("//my-host1/10AB/3/0", Some("//my-host2/20EF/4/B"), "up/my-host1/10AB/0/3/0/my-host2/20EF/0/4/B"; "Send Request")]
-    #[test_case("//*/FFFF/FF/FFFF", Some("//my-host2/20EF/4/B"), "up/*/*/0/*/*/my-host2/20EF/0/4/B"; "Receive all Requests")]
-    #[test_case("//*/FFFF/FF/FFFF", Some("//[::1]/FFFF/FF/FFFF"), "up/*/*/0/*/*/[::1]/*/0/*/*"; "Receive all messages to a device")]
+    #[test_case("/10AB/1/3/80CD", None, "up/192.168.1.100/10AB/1/3/80CD/{}/{}/{}/{}/{}"; "Send Publish")]
+    #[test_case("//192.168.1.100/10AB/1/3/80CD", None, "up/192.168.1.100/10AB/1/3/80CD/{}/{}/{}/{}/{}"; "Subscribe messages")]
+    #[test_case("//192.168.1.100/10AB/1/3/80CD", Some("//192.168.1.101/20EF/1/4/0"), "up/192.168.1.100/10AB/1/3/80CD/192.168.1.101/20EF/1/4/0"; "Send Notification")]
+    #[test_case("//*/FFFF/1/FF/FFFF", Some("//192.168.1.101/20EF/1/4/0"), "up/*/*/1/*/*/192.168.1.101/20EF/1/4/0"; "Receive all Notifications")]
+    #[test_case("//my-host1/10AB/1/3/0", Some("//my-host2/20EF/1/4/B"), "up/my-host1/10AB/1/3/0/my-host2/20EF/1/4/B"; "Send Request")]
+    #[test_case("//*/FFFF/1/FF/FFFF", Some("//my-host2/20EF/1/4/B"), "up/*/*/1/*/*/my-host2/20EF/1/4/B"; "Receive all Requests")]
+    #[test_case("//*/FFFF/1/FF/FFFF", Some("//[::1]/FFFF/1/FF/FFFF"), "up/*/*/1/*/*/[::1]/*/1/*/*"; "Receive all messages to a device")]
+    #[test_case("//*/FFFF/FFFF/FF/FFFF", Some("//[::1]/FFFF/FFFF/FF/FFFF"), "up/*/*/*/*/*/[::1]/*/*/*/*"; "Receive all entity instances")]
     fn test_to_zenoh_key_string(src_uri: &str, sink_uri: Option<&str>, zenoh_key: &str) {
-        let local_uri = UUri::from_str("//192.168.1.100/10AB/3/0").unwrap();
+        let local_uri = UUri::from_str("//192.168.1.100/10AB/1/3/0").unwrap();
         let src = UUri::from_str(src_uri).unwrap();
         if let Some(sink) = sink_uri {
             let sink = UUri::from_str(sink).unwrap();

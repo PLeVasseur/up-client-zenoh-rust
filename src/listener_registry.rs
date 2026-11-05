@@ -522,7 +522,8 @@ mod tests {
     // [utest->dsn~utransport-registerlistener-discard-invalid-messages~1]
     fn test_attachment_to_uattributes_accepts_valid_attributes() {
         let attribs = UMessageBuilder::publish(
-            UUri::try_from_parts("source", 0xAA1, 0x01, 0x9000).expect("failed to create source"),
+            UUri::try_from_parts("source", 0x0001_0AA1, 0x01, 0x9000)
+                .expect("failed to create source"),
         )
         .build()
         .expect("failed to create message")

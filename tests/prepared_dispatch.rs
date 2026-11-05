@@ -140,7 +140,7 @@ impl RegistrationHandler<ZenohPreparedRx> for Handler {
 }
 
 fn topic() -> UUri {
-    UUri::try_from("//prepared-dispatch/4321/1/8001").unwrap()
+    UUri::try_from("//prepared-dispatch/4321/1/1/8001").unwrap()
 }
 fn metadata() -> UFrameMetadata {
     UFrameMetadata::publish(topic())
@@ -166,7 +166,7 @@ async fn setup() -> (Arc<ZenohPreparedCore>, Arc<OpaqueRoute<ZenohPreparedCore>>
     let core = Arc::new(
         ZenohPreparedCore::from_session(
             zenoh::open(config).await.unwrap(),
-            "//prepared-dispatch/4321/1/0",
+            "//prepared-dispatch/4321/1/1/0",
             &[ZenohRouteReservation {
                 source: topic(),
                 sink: None,
@@ -622,7 +622,7 @@ async fn callback_core(session: zenoh::Session, sources: &[UUri]) -> Arc<ZenohPr
     Arc::new(
         ZenohPreparedCore::from_session(
             session,
-            "//prepared-dispatch/4321/1/0",
+            "//prepared-dispatch/4321/1/1/0",
             &catalog,
             ZenohPreparedConfig {
                 shm_segment_size: 1024 * 1024,
@@ -700,7 +700,7 @@ async fn direct_native_callback_refuses_recursive_publication_before_put(another
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn nested_native_callback_can_forward_but_refuses_an_entered_ancestor() {
-    let second_source = UUri::try_from("//prepared-dispatch/4321/1/8002").unwrap();
+    let second_source = UUri::try_from("//prepared-dispatch/4321/1/1/8002").unwrap();
     let core = callback_core(callback_session().await, &[topic(), second_source.clone()]).await;
     let first = Arc::new(DirectPublication {
         sender: callback_route(&core, second_source.clone()),

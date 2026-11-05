@@ -25,7 +25,7 @@ type Frame = control::Received<ProtobufWire>;
 
 async fn transport(name: &str, timeout: Duration) -> (Arc<Transport>, UUri) {
     let authority = format!("zenoh-q-{name}-{}", std::process::id());
-    let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/0"))
+    let core = ZenohZeroCopyCore::builder(format!("//{authority}/4210/1/1/0"))
         .with_shm_segment_size(1024 * 1024)
         .unwrap()
         .with_listener_quiesce_timeout(timeout)
@@ -35,7 +35,7 @@ async fn transport(name: &str, timeout: Duration) -> (Arc<Transport>, UUri) {
         .unwrap();
     (
         Arc::new(core.with_control_wire(ProtobufWire)),
-        UUri::try_from_parts(&authority, 0x4210, 1, 0x9000).unwrap(),
+        UUri::try_from_parts(&authority, 0x0001_4210, 1, 0x9000).unwrap(),
     )
 }
 

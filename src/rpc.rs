@@ -218,7 +218,7 @@ mod tests {
             .insert_json5("scouting/multicast/enabled", "false")
             .unwrap();
         Arc::new(
-            UPTransportZenoh::new(config, "//replies/1/1/0")
+            UPTransportZenoh::new(config, "//replies/1/1/1/0")
                 .await
                 .unwrap(),
         )
@@ -226,7 +226,7 @@ mod tests {
 
     fn reply_message(kind: ReplyKind, request: &UAttributes) -> UMessage {
         if matches!(kind, ReplyKind::NotResponse) {
-            return UMessageBuilder::publish(UUri::try_from("//replies/2/1/8001").unwrap())
+            return UMessageBuilder::publish(UUri::try_from("//replies/2/1/1/8001").unwrap())
                 .build()
                 .unwrap();
         }
@@ -239,7 +239,7 @@ mod tests {
             ReplyKind::WrongSource => UMessageBuilder::response(
                 request.source().clone(),
                 request.id().clone(),
-                UUri::try_from("//foreign/2/1/1").unwrap(),
+                UUri::try_from("//foreign/2/1/1/1").unwrap(),
             ),
             _ => UMessageBuilder::response_for_request(request),
         };
@@ -303,7 +303,7 @@ mod tests {
             .unwrap();
         let result = ZenohRpcClient::new(Arc::clone(&transport))
             .invoke_method(
-                UUri::try_from("//replies/2/1/1").unwrap(),
+                UUri::try_from("//replies/2/1/1/1").unwrap(),
                 CallOptions::for_rpc_request(5000, None, None, None),
                 None,
             )
@@ -341,7 +341,7 @@ mod tests {
         let started = Instant::now();
         let result = ZenohRpcClient::new(transport.clone())
             .invoke_method(
-                UUri::try_from("//replies/2/1/1").unwrap(),
+                UUri::try_from("//replies/2/1/1/1").unwrap(),
                 CallOptions::for_rpc_request(100, None, None, None),
                 None,
             )
@@ -368,7 +368,7 @@ mod tests {
         let calling = tokio::spawn(async move {
             client
                 .invoke_method(
-                    UUri::try_from("//replies/2/1/1").unwrap(),
+                    UUri::try_from("//replies/2/1/1/1").unwrap(),
                     CallOptions::for_rpc_request(5000, None, None, None),
                     None,
                 )
@@ -423,7 +423,7 @@ mod tests {
         const COUNT: usize = 1000;
         let transport = transport().await;
         let source = transport.get_source_uri();
-        let method = UUri::try_from("//replies/2/1/1").unwrap();
+        let method = UUri::try_from("//replies/2/1/1/1").unwrap();
         let key = transport.to_zenoh_key_string(&source, Some(&method));
         let requests = Arc::new(Mutex::new(Vec::with_capacity(COUNT)));
         let replies = Arc::new(Mutex::new(Vec::with_capacity(COUNT)));

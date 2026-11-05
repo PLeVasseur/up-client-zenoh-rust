@@ -27,13 +27,13 @@ async fn main() {
 
     println!("uProtocol RPC client example");
     let zenoh_transport = Arc::new(
-        UPTransportZenoh::new(common::get_zenoh_config(), "//rpc_client/1/1/0")
+        UPTransportZenoh::new(common::get_zenoh_config(), "//rpc_client/1/1/1/0")
             .await
             .unwrap(),
     );
     let rpc_client = Arc::new(ZenohRpcClient::new(zenoh_transport.clone()));
 
-    let sink_uuri = UUri::from_str("//rpc_server/1/1/1").unwrap();
+    let sink_uuri = UUri::from_str("//rpc_server/1/1/1/1").unwrap();
 
     // create uPayload and send request
     let data = String::from("GetCurrentTime");

@@ -32,7 +32,7 @@ pub async fn create_up_transport_zenoh(
     let local_uri = if local_authority_name.starts_with("//") {
         local_authority_name.to_string()
     } else {
-        format!("//{local_authority_name}/1/1/0")
+        format!("//{local_authority_name}/1/1/1/0")
     };
     UPTransportZenoh::new(config.unwrap_or_default(), local_uri).await
 }

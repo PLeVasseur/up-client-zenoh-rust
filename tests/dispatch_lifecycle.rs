@@ -33,7 +33,7 @@ fn transport(session: &zenoh::Session) -> Arc<UPTransportZenoh> {
 }
 
 fn topic(resource: u16) -> UUri {
-    UUri::try_from_parts("dispatch", 0x4321, 1, resource).unwrap()
+    UUri::try_from_parts("dispatch", 0x0001_4321, 1, resource).unwrap()
 }
 
 fn message(resource: u16, value: u8) -> UMessage {

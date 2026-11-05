@@ -267,9 +267,9 @@ fn response_accounting(server: &PreparedRpcServer<ZenohPreparedCore, Value>, exp
     reason = "Keep setup, first-client admission and ordered measured RPC windows together."
 )]
 fn rpc(runtime: &tokio::runtime::Runtime) {
-    let method = UUri::try_from_parts("rpc-service", 0x4210, 1, 0x1000).unwrap();
+    let method = UUri::try_from_parts("rpc-service", 0x0001_4210, 1, 0x1000).unwrap();
     let replies: Vec<_> = (0..9)
-        .map(|id| UUri::try_from_parts("rpc-client", id + 1, 1, 0).unwrap())
+        .map(|id| UUri::try_from_parts("rpc-client", 0x0001_0000 | (id + 1), 1, 0).unwrap())
         .collect();
     let mut catalog = Vec::new();
     for reply in &replies {
@@ -632,7 +632,7 @@ fn main() {
         let pressure = runtime
             .block_on(ZenohPreparedCore::from_session(
                 raw_session.clone(),
-                "//prepared/4210/1/0",
+                "//prepared/4210/1/1/0",
                 &catalog,
                 up_transport_zenoh::ZenohPreparedConfig {
                     shm_segment_size: 1024 * 1024,

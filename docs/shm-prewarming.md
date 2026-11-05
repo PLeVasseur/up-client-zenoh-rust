@@ -8,7 +8,7 @@ needs construction-time page materialization can explicitly opt in:
 use up_transport_zenoh::ZenohZeroCopyCore;
 
 let bytes = 48 * 1024 * 1024;
-let core = ZenohZeroCopyCore::builder("//vehicle/4210/1/0")
+let core = ZenohZeroCopyCore::builder("//vehicle/4210/1/1/0")
     .with_shm_segment_size(bytes)?
     .with_shm_prewarm(true)
     .build()

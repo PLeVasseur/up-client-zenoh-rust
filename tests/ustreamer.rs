@@ -159,19 +159,19 @@ async fn test_ustreamer() {
 
     // Initialization
     let uclient = Arc::new(
-        test_lib::create_up_transport_zenoh("//uclient/1/1/0", None)
+        test_lib::create_up_transport_zenoh("//uclient/1/1/1/0", None)
             .await
             .unwrap(),
     );
     let ustreamer = Arc::new(
-        test_lib::create_up_transport_zenoh("//ustreamer/2/1/0", None)
+        test_lib::create_up_transport_zenoh("//ustreamer/2/1/1/0", None)
             .await
             .unwrap(),
     );
 
     // Setup uStreamer listener
-    let src_filter = UUri::from_str("//uclient/FFFF/FF/FFFF").unwrap();
-    let sink_filter = UUri::from_str("//*/FFFF/FF/FFFF").unwrap();
+    let src_filter = UUri::from_str("//uclient/FFFF/1/FF/FFFF").unwrap();
+    let sink_filter = UUri::from_str("//*/FFFF/1/FF/FFFF").unwrap();
     let ustreamer_listener = Arc::new(UStreamerListener::new(ustreamer.clone()));
     ustreamer
         .register_listener(&src_filter, Some(&sink_filter), ustreamer_listener.clone())

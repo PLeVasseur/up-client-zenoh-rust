@@ -26,7 +26,7 @@ use zenoh::bytes::ZBytes;
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 
 fn topic_for(authority: &str, resource_id: u16) -> UUri {
-    UUri::try_from_parts(authority, 0x4210, 0x01, resource_id).expect("topic URI")
+    UUri::try_from_parts(authority, 0x0001_4210, 0x01, resource_id).expect("topic URI")
 }
 
 fn source_wildcard(authority: &str) -> UUri {
@@ -47,7 +47,7 @@ where
 {
     let core = ZenohOwnedCore::new(
         zenoh_config::Config::default(),
-        format!("//{authority}/4210/1/0"),
+        format!("//{authority}/4210/1/1/0"),
     )
     .await
     .expect("owned core");

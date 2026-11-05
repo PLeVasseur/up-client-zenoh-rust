@@ -36,12 +36,12 @@ async fn main() {
     UPTransportZenoh::try_init_log_from_env();
 
     println!("uProtocol subscriber example");
-    let subscriber = UPTransportZenoh::new(common::get_zenoh_config(), "//subscriber/2/1/0")
+    let subscriber = UPTransportZenoh::new(common::get_zenoh_config(), "//subscriber/2/1/1/0")
         .await
         .unwrap();
 
     // create uuri
-    let uuri = UUri::from_str("//publisher/1/1/8001").unwrap();
+    let uuri = UUri::from_str("//publisher/1/1/1/8001").unwrap();
 
     println!("Register the listener...");
     subscriber
