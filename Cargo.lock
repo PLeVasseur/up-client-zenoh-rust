@@ -3902,6 +3902,7 @@ dependencies = [
  "up-rust",
  "up-wire-xcdrv2",
  "zenoh",
+ "zenoh-shm",
 ]
 
 [[package]]

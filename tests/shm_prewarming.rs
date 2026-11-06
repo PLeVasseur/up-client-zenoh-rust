@@ -4,6 +4,136 @@
 
 #![cfg(feature = "zero-copy")]
 
+#[cfg(target_os = "linux")]
+mod prepared_startup {
+
+    use std::{
+        process::Command,
+        sync::atomic::Ordering,
+        time::{Duration, Instant},
+    };
+    use up_rust::{RouteLimits, UUri};
+    use up_transport_zenoh::{
+        zenoh_config, ZenohPreparedConfig, ZenohPreparedCore, ZenohRouteReservation,
+    };
+
+    const CHILD_CASE: &str = "UP_ZENOH_PREPARED_STARTUP_CASE";
+
+    fn watchdog_names() -> Vec<String> {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .map(|entry| {
+                std::fs::read_to_string(entry.unwrap().path().join("comm"))
+                    .unwrap()
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|name| name.starts_with("Watchdog "))
+            .collect()
+    }
+
+    async fn startup_case(case: &str) {
+        let transmit = case.ends_with("-tx");
+        let mut config = zenoh_config::Config::default();
+        for (key, value) in [
+            ("mode", "\"peer\""),
+            ("listen/endpoints", "[]"),
+            ("scouting/multicast/enabled", "false"),
+            ("scouting/gossip/enabled", "false"),
+            ("transport/shared_memory/mode", "\"lazy\""),
+        ] {
+            config.insert_json5(key, value).unwrap();
+        }
+        let catalog = [ZenohRouteReservation {
+            source: UUri::try_from_parts("prepared", 0x0001_4210, 1, 0x9000).unwrap(),
+            sink: None,
+            limits: RouteLimits {
+                max_metadata_len: 3072,
+                max_payload_len: 64,
+                payload_alignment: 8,
+            },
+            transmit,
+        }];
+        let prepared = ZenohPreparedConfig {
+            shm_segment_size: 1024 * 1024,
+            route_capacity: 1,
+            registration_capacity: 1,
+            allocation_observer: None,
+        };
+        let core = if case.starts_with("from-session-") {
+            let session = zenoh::open(config).await.unwrap();
+            ZenohPreparedCore::from_session(session, "//prepared/4210/1/1/0", &catalog, prepared)
+                .await
+                .unwrap()
+        } else {
+            ZenohPreparedCore::new(config, "//prepared/4210/1/1/0", &catalog, prepared)
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            core.prewarmed_shm_segment_size(),
+            if transmit { 1024 * 1024 } else { 0 },
+            "receive-only setup must not allocate a local payload provider"
+        );
+        assert_eq!(core.stats().published.load(Ordering::SeqCst), 0);
+        assert_eq!(core.stats().received_shm.load(Ordering::SeqCst), 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let names = watchdog_names();
+            if names.iter().any(|name| name.starts_with("Watchdog Confir"))
+                && names.iter().any(|name| name.starts_with("Watchdog Valida"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{case}: watchdogs absent before traffic: {names:?}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn prepared_shm_runtime_is_initialized_without_traffic() {
+        if let Ok(case) = std::env::var(CHILD_CASE) {
+            assert!(
+                watchdog_names().is_empty(),
+                "startup case must use a cold process"
+            );
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), startup_case(&case))
+                    .await
+                    .unwrap();
+            });
+            return;
+        }
+        let mut failures = Vec::new();
+        for case in ["new-tx", "new-rx", "from-session-tx", "from-session-rx"] {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "prepared_startup::prepared_shm_runtime_is_initialized_without_traffic",
+                    "--nocapture",
+                ])
+                .env(CHILD_CASE, case)
+                .status()
+                .unwrap();
+            if !status.success() {
+                failures.push(case);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "cold-process startup failures: {failures:?}"
+        );
+    }
+}
+
 #[path = "support/allocating_control.rs"]
 mod control;
 use control::WithControlWire;

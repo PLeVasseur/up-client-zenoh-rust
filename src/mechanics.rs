@@ -106,6 +106,7 @@ impl ZenohWireMechanics {
 
     #[cfg(feature = "zero-copy")]
     pub(crate) fn prewarm_shm(&self) -> Result<usize, UStatus> {
+        zenoh_shm::init::init();
         self.shm_provider()?;
         Ok(self.shm_segment_size)
     }

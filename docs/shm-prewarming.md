@@ -41,3 +41,19 @@ remain owned by Zenoh, not by this builder option.
 Pool capacity, matching-subscriber readiness, listener quiescence and retained
 sample lifetimes remain separate contracts. Choose sufficient pool capacity for
 all simultaneously retained loans before enabling prewarming.
+
+## Prepared endpoint runtime initialization
+
+`ZenohPreparedCore::new` and `ZenohPreparedCore::from_session` explicitly invoke
+Zenoh's SHM runtime initialization during prepared setup, even if an externally
+opened session selected lazy initialization. Creating a payload provider alone
+does not initialize all upstream SHM services. Prepared setup starts the global
+client/metadata, cleanup and watchdog services without allocating or publishing a
+priming sample. The opt-in builder prewarming path initializes these services too.
+
+Transmit-capable prepared catalogs still reserve their configured payload
+provider. Receive-only catalogs initialize the runtime needed to borrow remote
+samples but reserve no local payload provider; their reported prewarmed provider
+capacity remains zero. Runtime initialization is not a watchdog-thread scheduling
+barrier, a matching check or proof that a remote application received a successful
+local publication. Those remain separate lifecycle and conservation checks.

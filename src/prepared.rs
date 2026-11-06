@@ -239,6 +239,7 @@ impl ZenohPreparedCore {
         }
         let routes = table(prepared.route_capacity)?;
         let registrations = table(prepared.registration_capacity)?;
+        zenoh_shm::init::init();
         mechanics.set_shm_segment_size(prepared.shm_segment_size)?;
         // Receiver-only catalogs borrow remote SHM and reserve no unused local pool.
         let segment_size = prepared.shm_segment_size;

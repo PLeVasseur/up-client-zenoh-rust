@@ -53,7 +53,7 @@ perf-diagnostics = [
     "payload-contract-large-benchmarks",
     "zero-copy",
 ]
-zero-copy = ["zenoh/shared-memory", "zenoh/unstable", "up-rust/zero-copy-transport"]
+zero-copy = ["zenoh/shared-memory", "zenoh/unstable", "dep:zenoh-shm", "up-rust/zero-copy-transport"]
 
 [[bench]]
 name = "transport_criterion"
@@ -84,6 +84,7 @@ tracing-subscriber = "0.3.23"
 up-rust = { version = "=0.10.0-SNAPSHOT", git = "https://github.com/PLeVasseur/up-rust.git", rev = "5c09d30b5fcf95161cad3ce5da5c43a7d76b0291", default-features = false, features = ["communication", "owned-frame-transport", "protobuf-wire", "selected-wire-user-api", "transport-implementer-api", "wire-implementer-api", "util"] }
 # [impl->dsn~up-transport-zenoh-protocol-version~1]
 zenoh = { version = "1.10.2", features = ["internal"] }
+zenoh-shm = { version = "1.10.2", optional = true }
 
 [dev-dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
